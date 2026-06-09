@@ -2,7 +2,10 @@
 
 **Team:** Cho Hyeongmin
 
-**YouTube Demo:** [▶ Watch Demo Video](https://youtu.be/XXXXXXXXXXXX)
+| | Link |
+|---|---|
+| **Presentation Video** | [▶ Watch Presentation](https://youtu.be/XXXXXXXXXXXX) |
+| **Demo Video** | [▶ Watch Demo](https://youtu.be/XXXXXXXXXXXX) |
 
 ---
 
