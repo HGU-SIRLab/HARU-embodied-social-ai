@@ -82,61 +82,61 @@ RealSense + C270                         Qwen3-VL-8B                    Dynamixe
 
 ## 3. Hardware & Software Requirements
 
-### 3.1 하드웨어 구성
+### 3.1 Hardware Setup
 
-HARU를 실행하려면 아래 하드웨어가 모두 필요합니다.
+All of the following hardware components are required to run HARU.
 
-| 구성 요소 | 모델 | 역할 | 연결 방법 |
+| Component | Model | Role | Connection |
 |---|---|---|---|
-| 메인 컴퓨터 | NVIDIA Jetson (aarch64, JetPack) | 전체 시스템 실행 | — |
-| 얼굴 카메라 | Intel RealSense D435 | 사용자 얼굴·시선 감지 | USB → `/dev/video0` |
-| 몸통 카메라 | Logitech C270 | 사용자 몸통·손 제스처 감지 | USB → `/dev/video4` |
-| 모터 어댑터 | ROBOTIS U2D2 | Dynamixel 통신 변환기 (USB↔TTL) | USB → `/dev/ttyACM0` |
-| 서보 모터 | Dynamixel XL / XM 계열 × 9 | 관절 구동 | 3핀 TTL 체인 → U2D2 |
-| 전원 공급 | 12V DC (Dynamixel 규격) | 모터 전원 | SMPS → 파워 허브 → 각 모터 |
+| Main Computer | NVIDIA Jetson (aarch64, JetPack) | Runs the entire system | — |
+| Face Camera | Intel RealSense D435 | Captures user's face and gaze | USB → `/dev/video0` |
+| Body Camera | Logitech C270 | Captures user's torso and hand gestures | USB → `/dev/video4` |
+| Motor Adapter | ROBOTIS U2D2 | USB↔TTL converter for Dynamixel communication | USB → `/dev/ttyACM0` |
+| Servo Motors | Dynamixel XL / XM series × 9 | Drives all joints | 3-pin TTL daisy chain → U2D2 |
+| Power Supply | 12V DC (Dynamixel spec) | Motor power | SMPS → Power hub → Each motor |
 
-**하드웨어 연결 구성도:**
+**Hardware Connection Diagram:**
 
 ```
-[Jetson USB 포트]
-   ├── USB ──▶ Intel RealSense D435 (/dev/video0)   ← 얼굴/시선 카메라
-   ├── USB ──▶ Logitech C270        (/dev/video4)   ← 몸통/손짓 카메라
-   └── USB ──▶ U2D2 어댑터         (/dev/ttyACM0)  ← Dynamixel 통신
+[Jetson USB Ports]
+   ├── USB ──▶ Intel RealSense D435 (/dev/video0)   ← Face / gaze camera
+   ├── USB ──▶ Logitech C270        (/dev/video4)   ← Body / gesture camera
+   └── USB ──▶ U2D2 Adapter        (/dev/ttyACM0)  ← Dynamixel communication
 
-[U2D2 TTL 체인] (57600 baud, Protocol 2.0)
-   U2D2 ──▶ ID:3  r_arm_pitch    (우 팔 피치)
-         ──▶ ID:4  l_arm_pitch    (좌 팔 피치)
-         ──▶ ID:5  r_shoulder_roll (우 어깨 롤)
-         ──▶ ID:6  r_elbow_pitch  (우 팔꿈치)
-         ──▶ ID:7  l_shoulder_roll (좌 어깨 롤)
-         ──▶ ID:8  l_elbow_pitch  (좌 팔꿈치)
-         ──▶ ID:10 head_pan       (고개 좌우)
-         ──▶ ID:11 head_tilt      (고개 상하)
-         ──▶ ID:12 head_roll      (고개 기울기)
+[U2D2 TTL Daisy Chain] (57600 baud, Protocol 2.0)
+   U2D2 ──▶ ID:3  r_arm_pitch     (right arm pitch)
+         ──▶ ID:4  l_arm_pitch     (left arm pitch)
+         ──▶ ID:5  r_shoulder_roll (right shoulder roll)
+         ──▶ ID:6  r_elbow_pitch   (right elbow pitch)
+         ──▶ ID:7  l_shoulder_roll (left shoulder roll)
+         ──▶ ID:8  l_elbow_pitch   (left elbow pitch)
+         ──▶ ID:10 head_pan        (head yaw)
+         ──▶ ID:11 head_tilt       (head pitch)
+         ──▶ ID:12 head_roll       (head roll)
 
-[12V 전원]
-   SMPS ──▶ 파워 허브 ──▶ 모든 Dynamixel 모터 (데이지 체인)
+[12V Power]
+   SMPS ──▶ Power Hub ──▶ All Dynamixel motors (daisy chain)
 ```
 
-> Dynamixel 모터들은 3핀 케이블로 직렬 데이지 체인(daisy-chain) 연결됩니다.
-> U2D2는 Jetson과 모터 체인 사이의 USB↔TTL 변환기 역할을 합니다.
+> All Dynamixel motors are connected in a serial daisy chain via 3-pin TTL cables.
+> The U2D2 acts as a USB↔TTL bridge between the Jetson and the motor chain.
 
 ---
 
-### 3.2 소프트웨어 구성
+### 3.2 Software Setup
 
-**필수 소프트웨어:**
+**Required Software:**
 
-| 소프트웨어 | 버전 | 설치 방법 |
+| Software | Version | How to Install |
 |---|---|---|
-| JetPack SDK | 6.x (aarch64) | NVIDIA 공식 이미지 플래싱 |
+| JetPack SDK | 6.x (aarch64) | Flash official NVIDIA image |
 | ROS2 | Humble Hawksbill | `apt install ros-humble-desktop` |
-| Python | 3.10 | JetPack 기본 포함 |
-| CUDA | 12.x | JetPack 기본 포함 |
-| PyTorch | 2.5.0 (Jetson 전용) | 아래 설치 가이드 참고 |
-| Qwen3-VL-8B-Instruct | — | HuggingFace 자동 다운로드 |
+| Python | 3.10 | Included with JetPack |
+| CUDA | 12.x | Included with JetPack |
+| PyTorch | 2.5.0 (Jetson wheel) | See installation guide below |
+| Qwen3-VL-8B-Instruct | — | Auto-downloaded from HuggingFace |
 
-**Python 패키지 (`requirements.txt`):**
+**Python Packages (`requirements.txt`):**
 
 ```
 transformers>=5.8.0
@@ -151,35 +151,35 @@ numpy>=1.26.0
 
 ---
 
-### 3.3 설치 가이드
+### 3.3 Installation Guide
 
-#### Step 1 — ROS2 Humble 설치
+#### Step 1 — Install ROS2 Humble
 
 ```bash
-# ROS2 Humble 설치 (Ubuntu 22.04 / JetPack 기준)
+# Tested on Ubuntu 22.04 / JetPack
 sudo apt update && sudo apt install -y ros-humble-desktop
 echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-#### Step 2 — PyTorch 설치 (Jetson 전용 wheel)
+#### Step 2 — Install PyTorch (Jetson-specific wheel)
 
 ```bash
-# 워크스페이스 루트에 있는 Jetson 전용 wheel 파일로 설치
+# Use the Jetson-specific wheel file included in the workspace root
 cd ~/robot_brain_workspace
 pip install torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl
 ```
 
-> 일반 `pip install torch`는 x86용이므로 Jetson에서 CUDA 가속이 동작하지 않습니다.
-> 반드시 위의 Jetson 전용 wheel 파일을 사용하십시오.
+> The standard `pip install torch` installs an x86 build and will NOT provide CUDA acceleration on Jetson.
+> Always use the Jetson-specific wheel file above.
 
-#### Step 3 — Python 패키지 설치
+#### Step 3 — Install Python Packages
 
 ```bash
 pip install -r requirements.txt
 ```
 
-#### Step 4 — ROS2 워크스페이스 빌드
+#### Step 4 — Build the ROS2 Workspace
 
 ```bash
 cd ~/robot_brain_workspace
@@ -188,9 +188,9 @@ colcon build
 source install/setup.bash
 ```
 
-#### Step 5 — VLM 모델 다운로드 확인
+#### Step 5 — Pre-download the VLM Model
 
-`haru_brain` 노드 최초 실행 시 HuggingFace에서 `Qwen/Qwen3-VL-8B-Instruct`가 자동으로 다운로드됩니다 (약 16GB). 미리 받아두려면:
+On first launch, `haru_brain` automatically downloads `Qwen/Qwen3-VL-8B-Instruct` from HuggingFace (~16 GB). To pre-download it manually:
 
 ```bash
 python3 -c "from transformers import Qwen3VLForConditionalGeneration; Qwen3VLForConditionalGeneration.from_pretrained('Qwen/Qwen3-VL-8B-Instruct')"
@@ -198,35 +198,35 @@ python3 -c "from transformers import Qwen3VLForConditionalGeneration; Qwen3VLFor
 
 ---
 
-### 3.4 실행 방법
+### 3.4 Running HARU
 
-터미널을 **3개** 열어서 각 노드를 순서대로 실행합니다.
+Open **3 separate terminals** and launch each node in order.
 
 ```bash
-# 공통 — 모든 터미널에서 먼저 실행
+# Run this in every terminal first
 source /opt/ros/humble/setup.bash
 source ~/robot_brain_workspace/install/setup.bash
 ```
 
 ```bash
-# 터미널 1 — 눈: 카메라 영상 캡처 및 발행
+# Terminal 1 — Eyes: capture and publish camera frames
 ros2 run haru_vision vision_node
 ```
 
 ```bash
-# 터미널 2 — 뇌: VLM 추론 및 명령 생성 (모델 로딩에 약 30~60초 소요)
+# Terminal 2 — Brain: VLM inference and command generation (model loading takes ~30–60 sec)
 ros2 run haru_brain brain_node
 ```
 
 ```bash
-# 터미널 3 — 몸: 모터 제어 실행
+# Terminal 3 — Body: motor control execution
 ros2 run haru_action action_node
 ```
 
-**VLM 단독 테스트 (ROS2 없이):**
+**Standalone VLM Test (without ROS2):**
 
 ```bash
-# 모델 로딩과 추론만 단독으로 테스트
+# Test model loading and inference only
 cd ~/robot_brain_workspace
 python3 brain_test.py
 ```
