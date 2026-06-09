@@ -1,0 +1,29 @@
+# ROS2 빌드 산출물
+build/
+install/
+log/
+src/build/
+src/install/
+src/log/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+
+# 대용량 바이너리 / 설치 파일
+*.whl
+*.whl.*
+*.deb
+
+# torchvision 전체 소스 (1.3GB, 프로젝트 코드 아님)
+torchvision_src/
+
+# 테스트 파일
+sample_voice.wav
+
+# 기타
+.DS_Store
