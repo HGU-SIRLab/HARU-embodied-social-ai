@@ -80,7 +80,160 @@ RealSense + C270                         Qwen3-VL-8B                    Dynamixe
 
 ---
 
-## 3. Task and Method
+## 3. Hardware & Software Requirements
+
+### 3.1 하드웨어 구성
+
+HARU를 실행하려면 아래 하드웨어가 모두 필요합니다.
+
+| 구성 요소 | 모델 | 역할 | 연결 방법 |
+|---|---|---|---|
+| 메인 컴퓨터 | NVIDIA Jetson (aarch64, JetPack) | 전체 시스템 실행 | — |
+| 얼굴 카메라 | Intel RealSense D435 | 사용자 얼굴·시선 감지 | USB → `/dev/video0` |
+| 몸통 카메라 | Logitech C270 | 사용자 몸통·손 제스처 감지 | USB → `/dev/video4` |
+| 모터 어댑터 | ROBOTIS U2D2 | Dynamixel 통신 변환기 (USB↔TTL) | USB → `/dev/ttyACM0` |
+| 서보 모터 | Dynamixel XL / XM 계열 × 9 | 관절 구동 | 3핀 TTL 체인 → U2D2 |
+| 전원 공급 | 12V DC (Dynamixel 규격) | 모터 전원 | SMPS → 파워 허브 → 각 모터 |
+
+**하드웨어 연결 구성도:**
+
+```
+[Jetson USB 포트]
+   ├── USB ──▶ Intel RealSense D435 (/dev/video0)   ← 얼굴/시선 카메라
+   ├── USB ──▶ Logitech C270        (/dev/video4)   ← 몸통/손짓 카메라
+   └── USB ──▶ U2D2 어댑터         (/dev/ttyACM0)  ← Dynamixel 통신
+
+[U2D2 TTL 체인] (57600 baud, Protocol 2.0)
+   U2D2 ──▶ ID:3  r_arm_pitch    (우 팔 피치)
+         ──▶ ID:4  l_arm_pitch    (좌 팔 피치)
+         ──▶ ID:5  r_shoulder_roll (우 어깨 롤)
+         ──▶ ID:6  r_elbow_pitch  (우 팔꿈치)
+         ──▶ ID:7  l_shoulder_roll (좌 어깨 롤)
+         ──▶ ID:8  l_elbow_pitch  (좌 팔꿈치)
+         ──▶ ID:10 head_pan       (고개 좌우)
+         ──▶ ID:11 head_tilt      (고개 상하)
+         ──▶ ID:12 head_roll      (고개 기울기)
+
+[12V 전원]
+   SMPS ──▶ 파워 허브 ──▶ 모든 Dynamixel 모터 (데이지 체인)
+```
+
+> Dynamixel 모터들은 3핀 케이블로 직렬 데이지 체인(daisy-chain) 연결됩니다.
+> U2D2는 Jetson과 모터 체인 사이의 USB↔TTL 변환기 역할을 합니다.
+
+---
+
+### 3.2 소프트웨어 구성
+
+**필수 소프트웨어:**
+
+| 소프트웨어 | 버전 | 설치 방법 |
+|---|---|---|
+| JetPack SDK | 6.x (aarch64) | NVIDIA 공식 이미지 플래싱 |
+| ROS2 | Humble Hawksbill | `apt install ros-humble-desktop` |
+| Python | 3.10 | JetPack 기본 포함 |
+| CUDA | 12.x | JetPack 기본 포함 |
+| PyTorch | 2.5.0 (Jetson 전용) | 아래 설치 가이드 참고 |
+| Qwen3-VL-8B-Instruct | — | HuggingFace 자동 다운로드 |
+
+**Python 패키지 (`requirements.txt`):**
+
+```
+transformers>=5.8.0
+qwen-vl-utils>=0.0.14
+accelerate>=0.27.0
+safetensors>=0.4.0
+huggingface-hub>=0.23.0
+opencv-python>=4.8.1
+Pillow>=10.0.0
+numpy>=1.26.0
+```
+
+---
+
+### 3.3 설치 가이드
+
+#### Step 1 — ROS2 Humble 설치
+
+```bash
+# ROS2 Humble 설치 (Ubuntu 22.04 / JetPack 기준)
+sudo apt update && sudo apt install -y ros-humble-desktop
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+```
+
+#### Step 2 — PyTorch 설치 (Jetson 전용 wheel)
+
+```bash
+# 워크스페이스 루트에 있는 Jetson 전용 wheel 파일로 설치
+cd ~/robot_brain_workspace
+pip install torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl
+```
+
+> 일반 `pip install torch`는 x86용이므로 Jetson에서 CUDA 가속이 동작하지 않습니다.
+> 반드시 위의 Jetson 전용 wheel 파일을 사용하십시오.
+
+#### Step 3 — Python 패키지 설치
+
+```bash
+pip install -r requirements.txt
+```
+
+#### Step 4 — ROS2 워크스페이스 빌드
+
+```bash
+cd ~/robot_brain_workspace
+source /opt/ros/humble/setup.bash
+colcon build
+source install/setup.bash
+```
+
+#### Step 5 — VLM 모델 다운로드 확인
+
+`haru_brain` 노드 최초 실행 시 HuggingFace에서 `Qwen/Qwen3-VL-8B-Instruct`가 자동으로 다운로드됩니다 (약 16GB). 미리 받아두려면:
+
+```bash
+python3 -c "from transformers import Qwen3VLForConditionalGeneration; Qwen3VLForConditionalGeneration.from_pretrained('Qwen/Qwen3-VL-8B-Instruct')"
+```
+
+---
+
+### 3.4 실행 방법
+
+터미널을 **3개** 열어서 각 노드를 순서대로 실행합니다.
+
+```bash
+# 공통 — 모든 터미널에서 먼저 실행
+source /opt/ros/humble/setup.bash
+source ~/robot_brain_workspace/install/setup.bash
+```
+
+```bash
+# 터미널 1 — 눈: 카메라 영상 캡처 및 발행
+ros2 run haru_vision vision_node
+```
+
+```bash
+# 터미널 2 — 뇌: VLM 추론 및 명령 생성 (모델 로딩에 약 30~60초 소요)
+ros2 run haru_brain brain_node
+```
+
+```bash
+# 터미널 3 — 몸: 모터 제어 실행
+ros2 run haru_action action_node
+```
+
+**VLM 단독 테스트 (ROS2 없이):**
+
+```bash
+# 모델 로딩과 추론만 단독으로 테스트
+cd ~/robot_brain_workspace
+python3 brain_test.py
+```
+
+---
+
+## 5. Task and Method
 
 ### Task
 The core task is **real-time gesture-driven HRI**: given a continuous video stream of a person, HARU must recognize the person's intent and respond with a contextually appropriate, expressive motor action — without any pre-defined if-else logic.
@@ -98,9 +251,9 @@ Dynamixel hardware profile acceleration/velocity are set to 0, giving full traje
 
 ---
 
-## 4. Experiments
+## 6. Experiments
 
-### 4.1 Setup
+### 6.1 Setup
 | Component | Spec |
 |---|---|
 | Platform | NVIDIA Jetson (aarch64, JetPack) |
@@ -109,7 +262,7 @@ Dynamixel hardware profile acceleration/velocity are set to 0, giving full traje
 | Cameras | Intel RealSense D435 + Logitech C270 |
 | Motors | Dynamixel Protocol 2.0 (×9) |
 
-### 4.2 Evaluated Scenarios
+### 6.2 Evaluated Scenarios
 The following interaction scenarios were tested:
 
 | Scenario | Expected HARU Response |
@@ -120,7 +273,7 @@ The following interaction scenarios were tested:
 | User stands still / no gesture | Empty sequence returned, no movement |
 | User makes eye contact only | Subtle head movement, short verbal response |
 
-### 4.3 Latency Analysis
+### 6.3 Latency Analysis
 | Stage | Measured Time |
 |---|---|
 | Camera capture → ROS publish | ~33 ms (3 Hz) |
@@ -131,7 +284,7 @@ The following interaction scenarios were tested:
 
 ---
 
-## 5. Result Analysis
+## 7. Result Analysis
 
 HARU successfully demonstrated **context-aware, autonomous motion generation** driven entirely by a VLM. Key observations:
 
@@ -143,7 +296,7 @@ HARU successfully demonstrated **context-aware, autonomous motion generation** d
 
 ---
 
-## 6. Conclusion
+## 8. Conclusion
 
 This project presented HARU, a Physical AI robot that uses a Vision-Language Model as its sole decision-making engine for HRI. By treating the VLM as both a perceptual module and a motion planner, the system eliminates the need for hand-crafted rules or robot-specific training datasets.
 
@@ -153,7 +306,7 @@ Future work includes reducing inference latency via model quantization, adding s
 
 ---
 
-## 7. References
+## 9. References
 
 1. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
 2. Physical Intelligence. **"π0.5: A Vision-Language-Action Model for General Robot Control."** (2025).

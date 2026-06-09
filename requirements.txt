@@ -1,0 +1,33 @@
+# ============================================================
+# HARU Robot Python Dependencies
+# ============================================================
+#
+# [주의] torch / torchvision 은 Jetson 전용 wheel 파일로 설치합니다.
+#   PyPI의 일반 torch를 설치하면 CUDA 가속이 동작하지 않습니다.
+#
+#   워크스페이스 루트에 있는 wheel 파일로 설치:
+#   pip install torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl
+#   pip install torchvision  (소스 빌드 또는 Jetson용 whl)
+#
+# [주의] dynamixel-sdk 는 ROS2 Humble에 포함되어 있습니다.
+#   ROS2 환경이 source된 상태라면 별도 설치 불필요.
+#   독립 설치 시: pip install dynamixel-sdk==4.0.3
+#
+# [주의] rclpy, sensor_msgs, std_msgs 는 ROS2 Humble 패키지이며
+#   pip 으로 설치하지 않습니다. ROS2 설치 후 자동으로 제공됩니다.
+# ============================================================
+
+# --- VLM (Vision-Language Model) ---
+transformers>=5.8.0
+qwen-vl-utils>=0.0.14
+accelerate>=0.27.0
+safetensors>=0.4.0
+huggingface-hub>=0.23.0
+
+# --- Vision / Image Processing ---
+opencv-python>=4.8.1
+Pillow>=10.0.0
+numpy>=1.26.0
+
+# --- Motor Control (ROS2 환경 외부 설치 시) ---
+# dynamixel-sdk==4.0.3
