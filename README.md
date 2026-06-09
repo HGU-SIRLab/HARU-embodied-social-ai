@@ -233,7 +233,7 @@ python3 brain_test.py
 
 ---
 
-## 5. Task and Method
+## 4. Task and Method
 
 ### Task
 The core task is **real-time gesture-driven HRI**: given a continuous video stream of a person, HARU must recognize the person's intent and respond with a contextually appropriate, expressive motor action — without any pre-defined if-else logic.
@@ -251,9 +251,9 @@ Dynamixel hardware profile acceleration/velocity are set to 0, giving full traje
 
 ---
 
-## 6. Experiments
+## 5. Experiments
 
-### 6.1 Setup
+### 5.1 Setup
 | Component | Spec |
 |---|---|
 | Platform | NVIDIA Jetson (aarch64, JetPack) |
@@ -262,7 +262,7 @@ Dynamixel hardware profile acceleration/velocity are set to 0, giving full traje
 | Cameras | Intel RealSense D435 + Logitech C270 |
 | Motors | Dynamixel Protocol 2.0 (×9) |
 
-### 6.2 Evaluated Scenarios
+### 5.2 Evaluated Scenarios
 The following interaction scenarios were tested:
 
 | Scenario | Expected HARU Response |
@@ -273,7 +273,7 @@ The following interaction scenarios were tested:
 | User stands still / no gesture | Empty sequence returned, no movement |
 | User makes eye contact only | Subtle head movement, short verbal response |
 
-### 6.3 Latency Analysis
+### 5.3 Latency Analysis
 | Stage | Measured Time |
 |---|---|
 | Camera capture → ROS publish | ~33 ms (3 Hz) |
@@ -284,7 +284,7 @@ The following interaction scenarios were tested:
 
 ---
 
-## 7. Result Analysis
+## 6. Result Analysis
 
 HARU successfully demonstrated **context-aware, autonomous motion generation** driven entirely by a VLM. Key observations:
 
@@ -296,7 +296,7 @@ HARU successfully demonstrated **context-aware, autonomous motion generation** d
 
 ---
 
-## 8. Conclusion
+## 7. Conclusion
 
 This project presented HARU, a Physical AI robot that uses a Vision-Language Model as its sole decision-making engine for HRI. By treating the VLM as both a perceptual module and a motion planner, the system eliminates the need for hand-crafted rules or robot-specific training datasets.
 
@@ -306,7 +306,7 @@ Future work includes reducing inference latency via model quantization, adding s
 
 ---
 
-## 9. References
+## 8. References
 
 1. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
 2. Physical Intelligence. **"π0.5: A Vision-Language-Action Model for General Robot Control."** (2025).
