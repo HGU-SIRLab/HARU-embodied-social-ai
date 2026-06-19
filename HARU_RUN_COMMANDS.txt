@@ -1,0 +1,374 @@
+================================================================
+HARU 실행 명령어 & 운용 가이드
+System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
+최종 업데이트: 2026-06-19 (Phase 5 코드 완성 + 전체 버그수정)
+================================================================
+
+
+================================================================
+[ 0. 새 터미널 열 때마다 (필수) ]
+================================================================
+
+  source ~/.bashrc
+
+
+================================================================
+[ 1. 실행 모드 선택 ]
+================================================================
+
+■ 일반 운용 모드 (데이터 수집 없이 로봇만 동작)
+  haru-ws && haru-all
+
+■ HITL 데이터 수집 모드 (학습 데이터 만들기)
+  haru-ws && haru-hitl
+
+■ 오디오 포함 전체 파이프라인 (Phase 4.5)
+  haru-ws && ./launch_vla.sh audio
+
+■ 개별 노드 단독 실행 (디버깅용)
+  haru-vision      # 카메라만
+  haru-action      # 모터만
+  haru-brain       # Gemma 4만 (모델 로드 ~24초)
+  haru-audio       # 마이크 VAD만
+
+
+================================================================
+[ 2. HITL 데이터 수집 — 상세 사용법 ]
+================================================================
+
+목적: HARU가 잘못된 행동을 할 때 "이렇게 했어야 해"를 가르치는
+      데이터를 쌓는 과정. 이 데이터로 LoRA 어댑터를 학습시킴.
+
+------------------------------------------------------------
+2-1. 실행
+------------------------------------------------------------
+
+  haru-ws && haru-hitl
+
+  (내부적으로 4개 노드가 동시에 뜸)
+    vision_node   — 카메라 프레임 발행
+    action_node   — hitl_mode=true (hitl_node 명령 대기)
+    brain_node    — Gemma 4 추론 (60초 주기)
+    hitl_node     — 터미널 인터페이스 (포그라운드)
+
+------------------------------------------------------------
+2-2. 에피소드 흐름
+------------------------------------------------------------
+
+  [N] → 에피소드 시작 (새 episode_YYYYMMDD_HHMMSS/ 폴더 생성)
+      ↓
+  Gemma 4가 60초마다 장면을 보고 JSON 제안 출력
+      ↓
+  터미널에 제안 표시:
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   [에피소드 1 | 스텝 0] VLA 제안
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    표정  : empathy (5)
+    감정  : empathy
+    머리  : tilt=2400  pan=2057  roll=2041
+    오른팔: 1738
+    바퀴  : right=0  left=0
+    발화  : 많이 힘드셨나요?
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   [A] 승인   [C] 교정   [S] 스킵   [E] 에피소드 종료
+      ↓
+  사람이 [A] / [C] / [S] 입력
+      ↓
+  [E] → 에피소드 저장 (metadata.json + step_XXXX.npz 파일들)
+
+------------------------------------------------------------
+2-3. 키 설명
+------------------------------------------------------------
+
+  [A] 승인
+      - Gemma 4 제안이 적절할 때 사용
+      - 제안된 JSON 그대로 로봇에 전송 & step_XXXX.npz 저장
+      - is_corrected = False
+      - 학습 효과: "이 상황에서 이 판단은 옳다" 강화
+
+  [C] 교정  ← 핵심 기능
+      - Gemma 4 판단이 틀렸을 때 사용
+      - 교정 방법을 선택:
+
+      [D] 직접 시연 (키네스테틱 티칭) ← 권장
+          1. 토크 OFF → 관절이 자유롭게 움직여짐
+          2. 손으로 로봇을 원하는 자세로 직접 조작
+          3. Enter → 인코더 값 자동 캡처 후 토크 ON
+          4. 표정 ID·발화·바퀴는 별도로 수동 입력
+          ※ 관절 숫자를 몰라도 됨
+
+      [M] 수동 입력 (숫자 직접 입력)
+          아래 항목들을 직접 숫자로 입력 (Enter = 현재값 유지):
+          · 표정 ID (0~7)
+            0=neutral  1=joy  2=sadness  3=curiosity
+            4=surprise  5=empathy  6=thinking  7=concern
+          · 발화 텍스트 (한국어 문장 직접 입력)
+          · head_tilt  (1500~3086, 중립 2048)  — 고개 끄덕임
+          · head_pan   (1043~3071, 중립 2057)  — 고개 좌우
+          · head_roll  (1630~2452, 중립 2041)  — 고개 기울기
+          · r_arm_pitch     (1024~2451, 중립 1738)
+          · l_arm_pitch     (37~1542,   중립 790)
+          · r_shoulder_roll (1000~2050, 중립 1525)
+          · r_elbow_pitch   (2047~3062, 중립 2555)
+          · l_shoulder_roll (1047~2056, 중립 1552)
+          · l_elbow_pitch   (1021~2007, 중립 1514)
+          · right_wheel / left_wheel (-300~300, 이동 불필요시 0)
+
+      - 교정된 값으로 로봇 실행 & 저장 (is_corrected = True)
+      - 학습 효과: "이 상황에서 네 판단 대신 이렇게 해야 해" 교정
+
+  [S] 스킵
+      - 이 스텝은 데이터로 쓰기 애매할 때 사용
+      - 로봇은 Gemma 4 제안대로 실행되지만 저장은 안 됨
+      - 학습 데이터에 포함되지 않음
+
+  [E] 에피소드 종료 & 저장
+      - metadata.json 생성 후 에피소드 확정
+      - 이후 새 에피소드 시작 가능 [N]
+
+  [Q] 에피소드 취소
+      - 현재 에피소드 전체 삭제 (data/episodes/에서 폴더 제거)
+      - 잘못 수집됐다 싶을 때 사용
+
+------------------------------------------------------------
+2-4. 수집 전략
+------------------------------------------------------------
+
+  추천 에피소드 구성:
+    - 에피소드 1개 = 5~20 스텝 (한 상호작용 맥락)
+    - 첫 LoRA 학습 최소 요건: 20~30 스텝 이상 (교정 포함)
+    - 교정 비율 높을수록 학습 신호 강함
+
+  교정을 많이 하면 좋은 상황:
+    - 상황에 어울리지 않는 표정 (슬픈 상황에 joy=1 출력 등)
+    - 발화가 너무 짧거나 맥락과 무관할 때
+    - 머리 방향이 상황과 안 맞을 때
+
+  데이터 확인:
+    ls -lh data/episodes/                    # 에피소드 목록
+    ls data/episodes/episode_XXXXXX/         # 스텝 파일 목록
+    python -c "
+    import numpy as np
+    d = np.load('data/episodes/episode_XXXXXX/step_0000.npz', allow_pickle=False)
+    print({k: d[k].shape if hasattr(d[k], 'shape') else d[k].item() for k in d})"
+
+
+================================================================
+[ 3. LoRA 학습 (에피소드 수집 후) ]
+================================================================
+
+------------------------------------------------------------
+3-1. 학습 흐름 개요
+------------------------------------------------------------
+
+  에피소드 수집 (HITL)
+        ↓
+  data/episodes/  ← step_XXXX.npz 누적
+        ↓
+  python scripts/train_lora.py
+        ↓
+  data/adapters/adapter_YYYYMMDD_HHMMSS/  ← LoRA 어댑터 저장
+        ↓
+  다음 haru-brain 실행 시 자동 로드
+  "[Brain] LoRA 어댑터 로드 완료: adapter_XXXXXXXX" 로그 확인
+
+------------------------------------------------------------
+3-2. 학습 실행 명령
+------------------------------------------------------------
+
+  source /home/herobot/robot_brain_workspace/haru_vla_env/bin/activate
+  cd /home/herobot/robot_brain_workspace
+
+  # 데이터 파싱 먼저 확인 (모델 로드 없음, 빠름)
+  python scripts/train_lora.py --dry-run
+
+  # 기본 학습 (rank 16, 3 epoch, lr 2e-4)
+  python scripts/train_lora.py
+
+  # 강한 학습 (데이터 많을 때)
+  python scripts/train_lora.py --epochs 5 --rank 32
+
+  # 전체 옵션
+  python scripts/train_lora.py \
+    --epochs   3      \   # 반복 횟수 (기본 3)
+    --rank     16     \   # LoRA rank (기본 16, 클수록 표현력↑ 메모리↑)
+    --alpha    32     \   # LoRA alpha = rank × 2 권장
+    --lr       2e-4   \   # 학습률 (진동 시 1e-4로 낮추기)
+    --grad-acc 4          # gradient accumulation step (기본 4)
+
+------------------------------------------------------------
+3-3. LoRA가 하는 일
+------------------------------------------------------------
+
+  Gemma 4 12B 베이스 모델 (22GB, 고정)
+        +
+  LoRA 어댑터 (~수십 MB, 학습됨)
+        =
+  "이 사용자·이 환경에서의 행동 편차"
+
+  - 베이스 모델 가중치는 절대 변경 안 됨 → 파국적 망각 방지
+  - 어댑터만 교체하면 여러 사용자/환경에 독립적으로 적용 가능
+  - 새 데이터 수집 → 새 어댑터 학습 → 자동 교체 (이전 어댑터 보존)
+
+------------------------------------------------------------
+3-4. 어댑터 관리
+------------------------------------------------------------
+
+  ls data/adapters/                         # 생성된 어댑터 목록
+  cat data/adapters/adapter_XXXX/README.md  # 해당 어댑터 학습 정보
+  # brain_node는 항상 가장 최근 어댑터를 자동 선택
+
+  # 특정 어댑터 이전 버전으로 롤백하려면:
+  # adapter_manager.py의 latest_adapter()가 mtime(수정 시간) 기준으로 최신 선택하므로
+  # 원하지 않는 최신 어댑터 폴더의 타임스탬프를 과거로 바꾸거나 이름 앞에 _ 붙이면 됨
+  mv data/adapters/adapter_NEW data/adapters/_disabled_adapter_NEW
+
+
+================================================================
+[ 4. 장기 기억 (세션 간 SWM) ]
+================================================================
+
+  자동 동작 — 별도 설정 불필요
+  brain_node 종료 시 자동 저장, 시작 시 자동 복원
+
+  저장 위치: data/memory/swm_history.json
+  보존 용량: 최근 50 대화 쌍 (디스크), 추론 시 최근 4쌍 사용
+
+  이력 확인:
+    cat data/memory/swm_history.json
+
+  이력 초기화 (새로 시작):
+    rm data/memory/swm_history.json
+
+
+================================================================
+[ 5. 전체 학습 사이클 요약 ]
+================================================================
+
+  1일차  haru-hitl 으로 에피소드 수집
+         └→ 20~30 스텝 (교정 포함)
+
+  수집 후 python scripts/train_lora.py
+         └→ data/adapters/adapter_20260618_XXXXXX/ 생성
+
+  2일차  haru-hitl 재실행 → 어댑터 자동 로드
+         └→ 어제보다 개선된 행동 확인
+         └→ 여전히 이상한 부분은 다시 [C]로 교정 & 저장
+
+  ...반복...
+
+  수주 후 python scripts/train_lora.py (누적된 모든 에피소드로 재학습)
+         └→ 더 강력한 어댑터 생성
+
+
+================================================================
+[ 6. 토픽 구조 ]
+================================================================
+
+  [카메라] → haru_vision → /haru_vision/compressed
+  [마이크] → haru_audio  → /haru_audio/raw (16kHz float32)
+                         → /haru_audio/vad (Bool)
+
+  haru_brain (System 2, Gemma 4 12B)
+    입력: /haru_vision/compressed, /haru_audio/raw
+    출력: /haru_vla_raw        (JSON, 항상 여기만 발행)
+          /haru_expression     (Int32)
+          /haru_speech         (String)
+
+  라우팅:
+    직결 모드 (기본):  /haru_vla_raw → action_node
+    HITL 모드:        /haru_vla_raw → hitl_node → /haru_system1_command → action_node
+
+  action_node 파라미터:
+    hitl_mode:=false  직결 (기본)
+    hitl_mode:=true   HITL (haru-hitl 실행 시 자동 설정)
+
+
+================================================================
+[ 7. 모니터링 ]
+================================================================
+
+  ros2 topic echo /haru_vla_raw          # Gemma 4 원본 제안 JSON
+  ros2 topic echo /haru_system1_command  # 최종 실행 명령 (HITL 교정 반영)
+  ros2 topic echo /haru_expression       # 표정 ID
+  ros2 topic echo /haru_speech           # 발화 텍스트
+  ros2 topic hz   /haru_vision/compressed
+  ros2 topic echo /haru_audio/vad        # 발화 감지 여부
+  ros2 node list
+
+
+================================================================
+[ 8. 모터 직접 테스트 ]
+================================================================
+
+  ros2 topic pub --once /haru_system1_command std_msgs/msg/String \
+    '{"data": "{\"speech\": \"안녕\", \"expression_id\": 1, \"action\": {\"head_tilt\": 2296, \"head_pan\": 2057, \"head_roll\": 2041, \"r_arm_pitch\": 1738, \"l_arm_pitch\": 790, \"r_shoulder_roll\": 1525, \"r_elbow_pitch\": 2555, \"l_shoulder_roll\": 1552, \"l_elbow_pitch\": 1514, \"right_wheel\": 0.0, \"left_wheel\": 0.0}, \"duration\": 2.0}"}'
+
+  관절 범위 참고:
+    head_tilt       1500~3086  (중립 2048) — 고개 끄덕임
+    head_pan        1043~3071  (중립 2057) — 고개 좌우
+    head_roll       1630~2452  (중립 2041) — 고개 기울기
+    r_arm_pitch     1024~2451  (중립 1738)
+    l_arm_pitch     37~1542    (중립 790)
+    r_shoulder_roll 1000~2050  (중립 1525)
+    r_elbow_pitch   2047~3062  (중립 2555)
+    l_shoulder_roll 1047~2056  (중립 1552)
+    l_elbow_pitch   1021~2007  (중립 1514)
+    right_wheel     -300~300   (정지 0)
+    left_wheel      -300~300   (정지 0)
+
+
+================================================================
+[ 9. VAD 민감도 조정 ]
+================================================================
+
+  # 배경 소음 큰 환경 (덜 민감하게)
+  ros2 run haru_audio audio_node --ros-args -p vad_threshold:=0.02
+
+  # 조용한 환경 (더 민감하게)
+  ros2 run haru_audio audio_node --ros-args -p vad_threshold:=0.005
+
+  # 기본값: 0.01
+
+
+================================================================
+[ 10. 빌드 ]
+================================================================
+
+  cd /home/herobot/robot_brain_workspace
+  source /opt/ros/humble/setup.bash
+  colcon build --symlink-install
+  source install/setup.bash
+
+
+================================================================
+[ 11. 주의사항 ]
+================================================================
+
+  - torch: PyPI pip install torch 절대 금지 (Jetson NVIDIA 전용 wheel)
+  - 중국 모델 사용 금지 (Qwen, DeepSeek, GLM, InternVLA 등)
+  - Gemma 4 12B: bitsandbytes 4-bit 비호환 → bf16 22GB 사용 (정상)
+  - Gemma 4 추론: 약 45~50초 소요 (inference_interval 기본 60초)
+  - vision_node 충돌 시: source ~/.bashrc 후 재실행
+  - HITL 교정 시 Enter만 누르면 현재값 유지 (모든 필드 교정 불필요)
+  - [D] 키네스테틱 티칭 시: [D/M] 프롬프트가 나타난 후 타이핑할 것
+    (프롬프트 이전 입력은 내부에서 무시됨)
+
+================================================================
+[ 2026-06-19 버그수정 이력 ]
+================================================================
+
+  hitl_node   : _kb_worker ↔ _run_correction stdin 경쟁 수정
+                (select() 기반 타임아웃 폴링 + _in_correction 플래그)
+                _run_correction을 별도 스레드에서 실행 (타이머 비블로킹)
+                _joints_cb 길이 검증 추가 (IndexError 방지)
+  audio_node  : sounddevice 미설치 시 destroy_node 크래시 수정
+                RT 콜백 내 logging을 처리 스레드로 이전
+  brain_node  : self._brain=None 초기화 누락 수정
+  tom_prompt  : reset() → 디스크 이력도 초기화 (save_history([]))
+  session_mem : 원자적 파일 쓰기 (tmp+rename)
+  adapter_mgr : 정렬 기준 이름→mtime (수동 생성 어댑터 대응)
+  gemma4_inf  : JSON 파서 개선 (thought 채널 대응, 역순 탐색)
+  train_lora  : total_steps=max(1,…) 보호, bytes/str 안전 디코딩
+
+================================================================

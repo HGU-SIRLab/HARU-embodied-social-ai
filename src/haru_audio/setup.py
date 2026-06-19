@@ -1,24 +1,25 @@
 from setuptools import find_packages, setup
 
-package_name = 'haru_brain'
+package_name = 'haru_audio'
 
 setup(
     name=package_name,
-    version='0.2.0',
+    version='0.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
-        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='Hyungmin Cho',
+    maintainer='herobot',
     maintainer_email='22100713@handong.ac.kr',
-    description='HARU Brain Node — Gemma 4 12B Unified System 2',
-    license='MIT',
+    description='HARU Audio Input Node',
+    license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'brain_node = haru_brain.brain_node:main',
+            'audio_node = haru_audio.audio_node:main',
         ],
     },
 )

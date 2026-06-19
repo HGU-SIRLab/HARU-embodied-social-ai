@@ -1,140 +1,187 @@
+"""
+HARU Brain Node — System 2 (Gemma 4 12B Unified)
+
+구독:
+  haru_vision/compressed  (CompressedImage)
+  haru_audio/raw          (Float32MultiArray, 선택) — Phase 4.5 오디오 입력
+
+발행:
+  haru_vla_raw            (String, JSON) → hitl_node (HITL 모드) 또는 action_node (직결 모드)
+  haru_expression         (Int32)
+  haru_speech             (String)
+
+토픽 라우팅:
+  - HITL 모드  : brain → haru_vla_raw → hitl_node → haru_system1_command → action_node
+  - 직결 모드  : brain → haru_vla_raw → action_node (action_node가 haru_vla_raw 구독)
+  brain_node는 항상 haru_vla_raw만 발행. 모드 전환은 action_node/hitl_node 구동 여부로 결정.
+
+파라미터:
+  inference_interval (float, 기본 60.0): 추론 주기 (초)
+  audio_timeout      (float, 기본 5.0):  오디오 수신 후 이 시간 내에만 오디오 첨부
+"""
+
+import sys
+
+_VENV_SITE = '/home/herobot/robot_brain_workspace/haru_vla_env/lib/python3.10/site-packages'
+if _VENV_SITE not in sys.path:
+    sys.path.insert(0, _VENV_SITE)
+
+import io
+import json
+import threading
+import time
+
+import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Int32, Float32MultiArray
 from sensor_msgs.msg import CompressedImage
-import json
-import torch
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
 from PIL import Image
-import cv2
-import numpy as np
-from collections import deque
+
+from .gemma4_inference import Gemma4Inference
+
+_LOAD_TIMEOUT = 180.0  # 초 — 모델 로드 최대 대기
+
 
 class HaruBrainNode(Node):
     def __init__(self):
         super().__init__('haru_brain_node')
-        
-        # 1. 척수로 명령을 내릴 퍼블리셔
-        self.publisher_ = self.create_publisher(String, 'haru_command', 10)
-        
-        # 2. 시각 신경망에서 사진을 받아올 서브스크라이버
-        self.subscription = self.create_subscription(
+
+        # Gemma 4 12B bf16 추론 시간: ~45-50s. 60s 권장, 테스트 시 낮춰서 사용
+        self.declare_parameter('inference_interval', 60.0)
+        self.declare_parameter('audio_timeout',      5.0)
+        interval      = self.get_parameter('inference_interval').get_parameter_value().double_value
+        self._audio_timeout = self.get_parameter('audio_timeout').get_parameter_value().double_value
+
+        self.sub_image = self.create_subscription(
             CompressedImage,
             'haru_vision/compressed',
-            self.vision_callback,
-            10
+            self._image_cb,
+            10,
         )
-        
-        # 3. 비디오 인식을 위한 프레임 버퍼 (최근 3장 유지)
-        self.frame_buffer = deque(maxlen=3)
-        self.is_thinking = False # 뇌 과부하 방지 락(Lock)
-
-        self.get_logger().info('🧠 HARU 대뇌 노드 가동 중... (VLM 로딩 중)')
-        
-        # Qwen3-VL 모델 로딩
-        model_id = "Qwen/Qwen3-VL-8B-Instruct" 
-        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-            model_id, torch_dtype=torch.float16, device_map="cuda",
-            attn_implementation="eager", trust_remote_code=True
+        self.sub_audio = self.create_subscription(
+            Float32MultiArray,
+            'haru_audio/raw',
+            self._audio_cb,
+            5,
         )
-        self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-        self.get_logger().info('✅ 대뇌 로딩 완료! 카메라 데이터를 기다립니다.')
-        
-        # 4. 0.5초마다 뇌를 깨워서 번개처럼 반응하게 만드는 루프
-        self.timer = self.create_timer(0.5, self.think_and_act)
 
-    def vision_callback(self, msg):
+        # brain은 항상 haru_vla_raw만 발행
+        # action_node가 haru_vla_raw 직접 구독(직결) 또는 hitl_node 경유(HITL 모드)
+        self.pub_raw    = self.create_publisher(String, 'haru_vla_raw',     10)
+        self.pub_expr   = self.create_publisher(Int32,  'haru_expression',  10)
+        self.pub_speech = self.create_publisher(String, 'haru_speech',      10)
+
+        self._latest_frame: Image.Image | None = None
+        self._frame_lock   = threading.Lock()
+        self._latest_audio: np.ndarray | None = None
+        self._audio_recv_time: float = 0.0
+        self._audio_lock   = threading.Lock()
+        self._inferring    = False
+        self._model_ready  = False
+        self._brain        = None  # 모델 로드 전 AttributeError 방지
+
+        # 모델 로드를 별도 스레드에서 실행 → ROS2 spin 즉시 시작 가능
+        self._load_thread = threading.Thread(target=self._load_model, daemon=True)
+        self._load_thread.start()
+
+        self._infer_timer = self.create_timer(interval, self._timer_cb)
+        self.get_logger().info(
+            f'HARU Brain Node 시작 (추론 주기 {interval:.1f}s) — 모델 로드 중...'
+        )
+
+    # ── 모델 로드 (별도 스레드) ────────────────────────────────────────────────
+
+    def _load_model(self):
         try:
-            np_arr = np.frombuffer(msg.data, np.uint8)
-            cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(rgb_image)
-            self.frame_buffer.append(pil_image)
+            self._brain = Gemma4Inference(load_in_4bit=False)
+            self._brain.load()
+            self._model_ready = True
+            self.get_logger().info('[Brain] 모델 준비 완료. 추론 시작.')
         except Exception as e:
-            self.get_logger().error(f"이미지 디코딩 실패: {e}")
+            self.get_logger().error(f'[Brain] 모델 로드 실패: {e}')
 
-    def think_and_act(self):
-        if self.is_thinking or len(self.frame_buffer) < 3:
+    # ── 이미지 콜백 ────────────────────────────────────────────────────────────
+
+    def _image_cb(self, msg: CompressedImage):
+        try:
+            img = Image.open(io.BytesIO(bytes(msg.data))).convert('RGB')
+            with self._frame_lock:
+                self._latest_frame = img
+        except Exception as e:
+            self.get_logger().warn(f'이미지 디코딩 오류: {e}')
+
+    # ── 오디오 콜백 ────────────────────────────────────────────────────────────
+
+    def _audio_cb(self, msg: Float32MultiArray):
+        audio = np.array(msg.data, dtype=np.float32)
+        with self._audio_lock:
+            self._latest_audio    = audio
+            self._audio_recv_time = time.time()
+        dur = len(audio) / 16000
+        self.get_logger().info(f'[Brain] 오디오 수신: {dur:.2f}s ({len(audio)} 샘플)')
+
+    # ── 추론 타이머 ────────────────────────────────────────────────────────────
+
+    def _timer_cb(self):
+        if not self._model_ready or self._inferring:
             return
+        with self._frame_lock:
+            frame = self._latest_frame
+        if frame is None:
+            return
+        # 오디오가 최근 audio_timeout 초 이내에 수신됐으면 첨부
+        with self._audio_lock:
+            audio = self._latest_audio
+            if audio is not None:
+                age = time.time() - self._audio_recv_time
+                if age > self._audio_timeout:
+                    audio = None
+                else:
+                    self._latest_audio = None  # 한 번만 사용
+        self._inferring = True
+        threading.Thread(target=self._infer_worker, args=(frame, audio), daemon=True).start()
 
-        self.is_thinking = True
-        self.get_logger().info('🤔 동작 인지 및 자율 궤적 설계 중...')
-
-        frames = list(self.frame_buffer)
-
-        # 자율 궤적 생성 및 듀얼 비전(Dual Vision) 융합 시스템 프롬프트
-        system_prompt = """
-        당신은 사람과 교감하는 피지컬 AI 로봇 'HARU(하루)'입니다.
-        당신에게는 1초 동안 촬영된 3장의 사진(비디오 프레임)이 주어집니다.
-        
-        [👁️ 시각 데이터(이미지) 구조 안내]
-        주어진 이미지는 2대의 카메라 화면을 좌우로 결합한(Concatenated) 형태입니다.
-        - 왼쪽 절반 (RealSense 카메라): 사용자의 얼굴, 표정, 시선을 보여줍니다.
-        - 오른쪽 절반 (C270 카메라): 사용자의 몸통, 손짓, 전체적인 제스처를 보여줍니다.
-
-        [동작 설계 지침]
-        당신은 이 '두 가지 정보'를 융합하여 상황을 분석해야 합니다.
-        1. 시선과 교감: 사용자가 나(로봇)를 똑바로 쳐다보며(왼쪽 화면) 손을 흔든다면(오른쪽 화면), 매우 반갑게 양팔을 모두 사용하여 시퀀스를 짜십시오.
-        2. 자율 판단: 사용자가 화면의 어느 쪽(좌/우)에 치우쳐 있는지 파악하여, 가까운 쪽 팔을 우선적으로 사용해 인사하십시오.
-        3. 역동성: 어깨(shoulder_roll)를 여러 번 왕복시키는 연속 동작(Sequence)을 만들어 생동감을 주십시오.
-        4. 가만히 있기: 사용자가 손을 흔들지 않고 가만히 쳐다만 보거나 무의미한 행동을 한다면 빈 sequence([])를 반환하십시오.
-
-        [당신의 신체 구조]
-        - 오른팔: r_arm_pitch (1024~2451), r_shoulder_roll (1000~2050)
-        - 왼팔: l_arm_pitch (37~1542), l_shoulder_roll (1047~2056)
-        - 고개: head_pan (1043~3071), head_tilt (1500~3086)
-
-        반드시 아래의 JSON 포맷으로만 응답하십시오.
-        {
-          "speech": "짧은 대사!",
-          "sequence": [
-            {"action": {"r_arm_pitch": 2400, "r_shoulder_roll": 1200}, "duration": 1.0},
-            {"action": {"r_shoulder_roll": 1800}, "duration": 0.5},
-            {"action": {"r_shoulder_roll": 1200}, "duration": 0.5},
-            {"action": {"r_arm_pitch": 1024, "r_shoulder_roll": 2050}, "duration": 1.0}
-          ]
-        }
-        """
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": [
-                {"type": "image", "image": frames[0]},
-                {"type": "image", "image": frames[1]},
-                {"type": "image", "image": frames[2]},
-                {"type": "text", "text": "사용자의 행동을 분석하고, 나(HARU)의 신체를 활용한 연속 동작 JSON을 생성해 줘!"}
-            ]}
-        ]
-        
+    def _infer_worker(self, frame: Image.Image, audio: np.ndarray | None):
         try:
-            text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            image_inputs, video_inputs = process_vision_info(messages)
-
-            inputs = self.processor(
-                text=[text_input], images=image_inputs, videos=video_inputs,
-                padding=True, return_tensors="pt"
-            ).to("cuda")
-
-            with torch.no_grad():
-                # 시퀀스 데이터가 길어질 수 있으므로 max_new_tokens를 150으로 설정 (JSON 잘림 방지)
-                generated_ids = self.model.generate(**inputs, max_new_tokens=150)
-                generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-                output_text = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True)[0]
-            
-            self.get_logger().info(f'💡 VLM 생성 궤적:\n{output_text}')
-            
-            # JSON 텍스트 정제 후 전송
-            json_str = output_text.replace("```json", "").replace("```", "").strip()
-            msg = String()
-            msg.data = json_str
-            self.publisher_.publish(msg)
-            
+            t0 = time.time()
+            resp = self._brain.infer(frame, audio=audio)
+            elapsed = time.time() - t0
+            audio_tag = f' +audio({len(audio)/16000:.1f}s)' if audio is not None else ''
+            self.get_logger().info(
+                f'[Brain] {elapsed:.1f}s{audio_tag} | emotion={resp.emotion} | '
+                f'speech={resp.speech[:40]!r}'
+            )
+            self._publish(resp)
         except Exception as e:
-            self.get_logger().error(f'추론 에러 발생: {e}')
+            self.get_logger().error(f'[Brain] 추론 오류: {e}')
         finally:
-            self.frame_buffer.clear()
-            self.is_thinking = False
+            self._inferring = False
+
+    # ── 발행 ──────────────────────────────────────────────────────────────────
+
+    def _publish(self, resp):
+        cmd = resp.to_command_dict()
+        json_str = json.dumps(cmd, ensure_ascii=False)
+
+        raw_msg = String()
+        raw_msg.data = json_str
+        self.pub_raw.publish(raw_msg)
+
+        expr_msg = Int32()
+        expr_msg.data = resp.expression_id
+        self.pub_expr.publish(expr_msg)
+
+        speech_msg = String()
+        speech_msg.data = resp.speech
+        self.pub_speech.publish(speech_msg)
+
+        act = cmd['action']
+        self.get_logger().info(
+            f'[Pub] expr={resp.expression_id} '
+            f'head=({act["head_tilt"]:.0f},{act["head_pan"]:.0f},{act["head_roll"]:.0f})'
+        )
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -142,10 +189,11 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info('종료')
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

@@ -1,318 +1,388 @@
-# HARU: A Physical AI Robot with Vision-Language Model for Human-Robot Interaction
+# HARU — Embodied Social AI for Proactive Human-Robot Interaction
 
-**Team:** Cho Hyeongmin
+<p align="center">
+  <img src="https://img.shields.io/badge/ROS2-Humble-blue" />
+  <img src="https://img.shields.io/badge/Jetson-AGX_Orin_64GB-green" />
+  <img src="https://img.shields.io/badge/Model-Gemma_4_12B-orange" />
+  <img src="https://img.shields.io/badge/Phase-5_(QLoRA_+_HITL)-purple" />
+</p>
 
-| | Link |
-|---|---|
-| **Presentation Video** | [▶ Watch Presentation](https://youtu.be/XXXXXXXXXXXX) |
-| **Demo Video** | [▶ Watch Demo](https://youtu.be/XXXXXXXXXXXX) |
-
----
-
-## 1. Introduction
-
-Recent advances in Vision-Language Models (VLMs) and large-scale robot learning have opened new possibilities for building robots that can naturally interact with humans without hand-crafted rules. Works such as OpenVLA, π0.5, HumanPlus, and Diffusion Policy have demonstrated that end-to-end learned policies can generalize across diverse tasks and environments.
-
-Inspired by these approaches, this project presents **HARU** (Human-Aware Responsive Unit), a physical AI robot designed for expressive Human-Robot Interaction (HRI). Instead of pre-programmed motion sequences, HARU uses a Vision-Language Model to *observe* the human in real time and *autonomously generate* a natural response — both a verbal reply and a full motor action sequence — on the fly.
-
-The key idea is simple: **give the robot eyes, a brain, and a body, and let the AI decide how to react.**
+**Author:** Cho Hyeongmin | Handong Global University, SIRLab  
+**Research:** M.S. Thesis — Embodied Social AI for Proactive HRI
 
 ---
 
-## 2. System Architecture
+## Overview
 
-HARU is built on ROS2 and consists of three tightly coupled nodes:
+**HARU** is a social companion robot that goes beyond mechanical command execution. It fuses **Physical AI** and **Human-Robot Interaction (HRI)** into a single embodied system capable of empathetic, proactive interaction with people of all ages.
 
-```
-[Dual Camera]
-      │
-      ▼
- haru_vision ──(haru_vision/compressed)──▶ haru_brain ──(haru_command)──▶ haru_action
-      │                                         │                               │
-RealSense + C270                         Qwen3-VL-8B                    Dynamixel Motors
-(face & body)                          (VLM Inference)                  (9 joints, 50Hz)
-```
+Rather than reacting to explicit commands, HARU *observes* the human's facial expressions, body language, and voice tone — then *initiates* conversation first: *"Are you feeling sad because of something that happened?"*
 
-### 2.1 haru_vision (Eyes)
-- Captures from two cameras simultaneously:
-  - **Port 0 — Intel RealSense**: user's face and gaze
-  - **Port 4 — Logitech C270**: user's torso and hand gestures
-- Resizes both frames to **448×448** and concatenates them horizontally → **896×448** single image
-- Publishes at **3 Hz** as JPEG-compressed ROS2 `CompressedImage` messages
+The system is built on five core principles:
 
-### 2.2 haru_brain (Brain)
-- Subscribes to the vision topic and maintains a **rolling buffer of 3 frames** (≈1 second of video)
-- Every **0.5 seconds**, feeds the 3-frame buffer into **Qwen3-VL-8B-Instruct** (float16, CUDA)
-- The system prompt instructs the model to:
-  - Fuse left-half (face/gaze) and right-half (body/gesture) information
-  - Autonomously design a natural motor action sequence (`sequence`)
-  - Return a strictly structured JSON with speech and motion
-
-**Example VLM Output:**
-```json
-{
-  "speech": "Hi there! Nice to see you!",
-  "sequence": [
-    {"action": {"r_arm_pitch": 2400, "r_shoulder_roll": 1200}, "duration": 1.0},
-    {"action": {"r_shoulder_roll": 1800}, "duration": 0.5},
-    {"action": {"r_shoulder_roll": 1200}, "duration": 0.5},
-    {"action": {"r_arm_pitch": 1024, "r_shoulder_roll": 2050}, "duration": 1.0}
-  ]
-}
-```
-
-### 2.3 haru_action (Body)
-- Subscribes to `haru_command` and drives **9 Dynamixel servos** via U2D2 adapter (`/dev/ttyACM0`, 57600 baud)
-- Runs a **50 Hz control loop** that executes the received sequence step by step
-- Applies **Smoothstep interpolation** (`3t² - 2t³`) for natural acceleration and deceleration
-- New commands **interrupt** the current motion immediately for responsive interaction
-
-**Controllable Joints:**
-
-| Joint | Dynamixel ID | Range |
-|---|---|---|
-| r_arm_pitch | 3 | 1024 ~ 2451 |
-| l_arm_pitch | 4 | 37 ~ 1542 |
-| r_shoulder_roll | 5 | 1000 ~ 2050 |
-| r_elbow_pitch | 6 | 2047 ~ 3062 |
-| l_shoulder_roll | 7 | 1047 ~ 2056 |
-| l_elbow_pitch | 8 | 1021 ~ 2007 |
-| head_pan | 10 | 1043 ~ 3071 |
-| head_tilt | 11 | 1500 ~ 3086 |
-| head_roll | 12 | 1630 ~ 2452 |
+| Principle | Description |
+|-----------|-------------|
+| **Pre-trained Foundation** | Gemma 4 12B provides universal social common sense out of the box |
+| **SWM + Adaptive ToM** | Social World Model + 6-stage Theory of Mind for deep context understanding |
+| **Proactive HRI** | Robot initiates interaction without waiting for commands |
+| **Human-in-the-Loop** | Human corrections are captured and used to improve behavior |
+| **Episodic LoRA** | Daily interactions are accumulated as lightweight LoRA adapters, preventing catastrophic forgetting |
 
 ---
 
-## 3. Hardware & Software Requirements
+## Architecture — Hierarchical Dual-System
 
-### 3.1 Hardware Setup
+Inspired by Kahneman's System 1 / System 2 cognitive theory:
 
-All of the following hardware components are required to run HARU.
+```
+[RealSense SR300]──┐
+                   ├──▶  haru_vision  ──▶  /haru_vision/compressed
+[Logitech C270] ───┘         3Hz, 896×448 JPEG
+
+[C270 Microphone] ──▶  haru_audio  ──▶  /haru_audio/raw
+                         VAD, 16kHz              (Float32MultiArray)
+
+                    ┌────────────────────────────────────────┐
+                    │         haru_brain  (System 2)         │
+                    │   Gemma 4 12B Unified  (~45-50s/turn)  │
+                    │   MindPower 6-stage ToM                │
+                    │   Social World Model (SWM)             │
+                    │   Session Memory (50 pairs, disk)      │
+                    │   PEFT LoRA adapter auto-load          │
+                    └────────────┬───────────────────────────┘
+                                 │ /haru_vla_raw (JSON)
+                      ┌──────────▼──────────┐
+                      │  [HITL mode]        │
+                      │  haru_logger        │──▶  data/episodes/
+                      │  Episode collection │
+                      │  Kinesthetic teach  │
+                      └──────────┬──────────┘
+                                 │ /haru_system1_command
+                    ┌────────────▼───────────────────────────┐
+                    │        haru_action  (System 1)         │
+                    │   50Hz Smoothstep interpolation        │
+                    │   9 position joints + 2 wheel drives   │
+                    └────────────┬───────────────────────────┘
+                                 │
+                    [Dynamixel U2D2  /dev/ttyACM0]
+                    ID 3~12 (Protocol 2.0, 57600 baud)
+```
+
+### Why Dual-System?
+
+OpenVLA-style single end-to-end models were evaluated first but rejected due to:
+- **Language collapse** — discrete action tokenization corrupts the language generation space (ŸŸŸŸ phenomenon)
+- **15-second latency** — autoregressive action token generation is incompatible with real-time HRI
+- **Structural bottleneck** — simultaneous conversation + gesture generation is architecturally impossible
+
+The Dual-System separates *deliberative reasoning* (System 2, slow but deep) from *reactive execution* (System 1, fast and smooth), achieving both linguistic quality and physical responsiveness.
+
+---
+
+## Key Features
+
+### System 2 — Gemma 4 12B Unified
+- **Native multimodal input**: raw pixels + 16kHz audio in a single encoder-free decoder
+- **MindPower ToM**: 6-stage reasoning — Perception → Belief → Desire → Intention → Decision → Action
+- **Session memory**: conversation history persisted across sessions (`data/memory/swm_history.json`)
+- **Episodic LoRA**: PEFT adapter auto-loaded at startup from `data/adapters/`
+
+### System 1 — haru_action
+- **50Hz control loop** with Smoothstep (`3t² − 2t³`) interpolation
+- **9 position-controlled joints** + **2 velocity-controlled wheels**
+- **Kinesthetic mode**: hardware torque ON/OFF for direct physical teaching
+- Publishes joint states at 10Hz (`/haru_joints/state`) for HITL capture
+
+### HITL Pipeline
+- **[A] Accept** — robot executes VLA proposal as-is, saved as positive example
+- **[C] Correct** — two correction modes:
+  - **[D] Direct (Kinesthetic Teaching)** — torque OFF → physically move robot → Enter → encoder auto-captured
+  - **[M] Manual** — type joint values directly (Enter = keep current)
+- **[S] Skip** — robot executes but data not logged
+- **[E] End** — save episode with metadata
+
+### QLoRA Training (`scripts/train_lora.py`)
+- `HaruEpisodeDataset` — PyTorch Dataset with pre-tokenized samples and accurate loss masking
+- Prompt tokens masked with `labels[:prompt_len] = -100`
+- `gradient_checkpointing` with `use_reentrant=False` (Gemma 4 KV-sharing bug workaround)
+- Saves to `data/adapters/adapter_YYYYMMDD_HHMMSS/`; auto-loaded on next brain_node start
+
+---
+
+## Hardware
 
 | Component | Model | Role | Connection |
-|---|---|---|---|
-| Main Computer | NVIDIA Jetson (aarch64, JetPack) | Runs the entire system | — |
-| Face Camera | Intel RealSense D435 | Captures user's face and gaze | USB → `/dev/video0` |
-| Body Camera | Logitech C270 | Captures user's torso and hand gestures | USB → `/dev/video4` |
-| Motor Adapter | ROBOTIS U2D2 | USB↔TTL converter for Dynamixel communication | USB → `/dev/ttyACM0` |
-| Servo Motors | Dynamixel XL / XM series × 9 | Drives all joints | 3-pin TTL daisy chain → U2D2 |
-| Power Supply | 12V DC (Dynamixel spec) | Motor power | SMPS → Power hub → Each motor |
+|-----------|-------|------|------------|
+| Main Computer | NVIDIA Jetson AGX Orin 64GB | Full system | — |
+| Face Camera | Intel RealSense SR300 | Face & gaze | USB → `/dev/video0` |
+| Body Camera | Logitech C270 | Body & gestures | USB → `/dev/video4` |
+| Microphone | Logitech C270 USB Audio | Voice tone & intonation | PulseAudio |
+| Motor Adapter | ROBOTIS U2D2 | USB↔TTL bridge | USB → `/dev/ttyACM0` |
+| Servo Motors | Dynamixel XM/XH series ×11 | 9 joints + 2 wheels | TTL daisy chain |
 
-**Hardware Connection Diagram:**
+### Joint Map
 
-```
-[Jetson USB Ports]
-   ├── USB ──▶ Intel RealSense D435 (/dev/video0)   ← Face / gaze camera
-   ├── USB ──▶ Logitech C270        (/dev/video4)   ← Body / gesture camera
-   └── USB ──▶ U2D2 Adapter        (/dev/ttyACM0)  ← Dynamixel communication
+| Joint | ID | Range | Role |
+|-------|----|-------|------|
+| r_arm_pitch | 3 | 1024–2451 | Right arm pitch |
+| l_arm_pitch | 4 | 37–1542 | Left arm pitch |
+| r_shoulder_roll | 5 | 1000–2050 | Right shoulder roll |
+| r_elbow_pitch | 6 | 2047–3062 | Right elbow |
+| l_shoulder_roll | 7 | 1047–2056 | Left shoulder roll |
+| l_elbow_pitch | 8 | 1021–2007 | Left elbow |
+| head_pan | 10 | 1043–3071 | Head yaw (left/right) |
+| head_tilt | 11 | 1500–3086 | Head pitch (nod) |
+| head_roll | 12 | 1630–2452 | Head roll (tilt) |
+| right_wheel | 1 | −300–300 | Right drive wheel |
+| left_wheel | 2 | −300–300 | Left drive wheel |
 
-[U2D2 TTL Daisy Chain] (57600 baud, Protocol 2.0)
-   U2D2 ──▶ ID:3  r_arm_pitch     (right arm pitch)
-         ──▶ ID:4  l_arm_pitch     (left arm pitch)
-         ──▶ ID:5  r_shoulder_roll (right shoulder roll)
-         ──▶ ID:6  r_elbow_pitch   (right elbow pitch)
-         ──▶ ID:7  l_shoulder_roll (left shoulder roll)
-         ──▶ ID:8  l_elbow_pitch   (left elbow pitch)
-         ──▶ ID:10 head_pan        (head yaw)
-         ──▶ ID:11 head_tilt       (head pitch)
-         ──▶ ID:12 head_roll       (head roll)
+### Expression IDs
 
-[12V Power]
-   SMPS ──▶ Power Hub ──▶ All Dynamixel motors (daisy chain)
-```
-
-> All Dynamixel motors are connected in a serial daisy chain via 3-pin TTL cables.
-> The U2D2 acts as a USB↔TTL bridge between the Jetson and the motor chain.
+| ID | Expression | ID | Expression |
+|----|------------|----|------------|
+| 0 | neutral | 4 | surprise |
+| 1 | joy | 5 | empathy |
+| 2 | sadness | 6 | thinking |
+| 3 | curiosity | 7 | concern |
 
 ---
 
-### 3.2 Software Setup
+## Software Requirements
 
-**Required Software:**
-
-| Software | Version | How to Install |
-|---|---|---|
-| JetPack SDK | 6.x (aarch64) | Flash official NVIDIA image |
-| ROS2 | Humble Hawksbill | `apt install ros-humble-desktop` |
+| Software | Version | Notes |
+|----------|---------|-------|
+| JetPack SDK | 6.2.2 | Ubuntu 22.04, CUDA 12.6 |
+| ROS2 | Humble | `apt install ros-humble-desktop` |
 | Python | 3.10 | Included with JetPack |
-| CUDA | 12.x | Included with JetPack |
-| PyTorch | 2.5.0 (Jetson wheel) | See installation guide below |
-| Qwen3-VL-8B-Instruct | — | Auto-downloaded from HuggingFace |
+| PyTorch | 2.5.0 (Jetson wheel) | **Do NOT use `pip install torch`** |
+| transformers | ≥ 5.12.0 | Gemma 4 `Gemma4UnifiedForConditionalGeneration` |
+| peft | ≥ 0.19.1 | LoRA adapter loading |
+| trl | ≥ 1.6.0 | QLoRA training utilities |
+| sounddevice | ≥ 0.5.5 | Microphone capture |
+| scipy | ≥ 1.15.3 | Audio resampling |
+| dynamixel-sdk | — | Motor control |
+| opencv-python | — | Camera capture |
 
-**Python Packages (`requirements.txt`):**
+> ⚠️ **Jetson PyTorch**: Always use the NVIDIA-provided wheel. Standard PyPI builds have no CUDA support on aarch64.
 
-```
-transformers>=5.8.0
-qwen-vl-utils>=0.0.14
-accelerate>=0.27.0
-safetensors>=0.4.0
-huggingface-hub>=0.23.0
-opencv-python>=4.8.1
-Pillow>=10.0.0
-numpy>=1.26.0
-```
+> ⚠️ **bitsandbytes 4-bit**: Incompatible with Gemma 4 Unified architecture (confirmed on bitsandbytes 0.49.2). The system loads in **bf16 (~22GB)**. Do not pass `load_in_4bit=True`.
 
 ---
 
-### 3.3 Installation Guide
+## Installation
 
-#### Step 1 — Install ROS2 Humble
+### 1. ROS2 Humble
 
 ```bash
-# Tested on Ubuntu 22.04 / JetPack
 sudo apt update && sudo apt install -y ros-humble-desktop
 echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-#### Step 2 — Install PyTorch (Jetson-specific wheel)
-
-```bash
-# Use the Jetson-specific wheel file included in the workspace root
-cd ~/robot_brain_workspace
-pip install torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl
-```
-
-> The standard `pip install torch` installs an x86 build and will NOT provide CUDA acceleration on Jetson.
-> Always use the Jetson-specific wheel file above.
-
-#### Step 3 — Install Python Packages
-
-```bash
-pip install -r requirements.txt
-```
-
-#### Step 4 — Build the ROS2 Workspace
+### 2. Python Virtual Environment
 
 ```bash
 cd ~/robot_brain_workspace
+python3 -m venv haru_vla_env
+source haru_vla_env/bin/activate
+```
+
+### 3. PyTorch (Jetson wheel)
+
+```bash
+# Use the Jetson-specific wheel — DO NOT use pip install torch
+pip install torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl
+```
+
+### 4. Python Packages
+
+```bash
+pip install transformers>=5.12.0 peft>=0.19.1 trl>=1.6.0 \
+    accelerate safetensors huggingface-hub \
+    sounddevice scipy opencv-python Pillow numpy \
+    dynamixel-sdk
+```
+
+### 5. Build ROS2 Workspace
+
+```bash
 source /opt/ros/humble/setup.bash
-colcon build
+colcon build --symlink-install
 source install/setup.bash
 ```
 
-#### Step 5 — Pre-download the VLM Model
+### 6. Model Download
 
-On first launch, `haru_brain` automatically downloads `Qwen/Qwen3-VL-8B-Instruct` from HuggingFace (~16 GB). To pre-download it manually:
+On first run, `haru_brain` downloads `google/gemma-4-12B-it` (~23GB) from HuggingFace automatically. To pre-download:
 
 ```bash
-python3 -c "from transformers import Qwen3VLForConditionalGeneration; Qwen3VLForConditionalGeneration.from_pretrained('Qwen/Qwen3-VL-8B-Instruct')"
+source haru_vla_env/bin/activate
+python3 -c "
+from transformers import Gemma4UnifiedForConditionalGeneration, AutoProcessor
+AutoProcessor.from_pretrained('google/gemma-4-12B-it', trust_remote_code=True)
+Gemma4UnifiedForConditionalGeneration.from_pretrained(
+    'google/gemma-4-12B-it', dtype='bfloat16', trust_remote_code=True)
+"
 ```
 
 ---
 
-### 3.4 Running HARU
-
-Open **3 separate terminals** and launch each node in order.
+## Running HARU
 
 ```bash
-# Run this in every terminal first
-source /opt/ros/humble/setup.bash
-source ~/robot_brain_workspace/install/setup.bash
+# Required in every terminal
+source ~/.bashrc   # loads ROS2 + aliases
 ```
 
+### Normal Operation (no data collection)
+
 ```bash
-# Terminal 1 — Eyes: capture and publish camera frames
-ros2 run haru_vision vision_node
+haru-ws && haru-all
+# or individually:
+haru-vision   # camera node
+haru-brain    # Gemma 4 inference (~24s to load)
+haru-action   # motor control
+haru-audio    # microphone VAD
 ```
 
+### HITL Data Collection Mode
+
 ```bash
-# Terminal 2 — Brain: VLM inference and command generation (model loading takes ~30–60 sec)
-ros2 run haru_brain brain_node
+haru-ws && haru-hitl
 ```
 
-```bash
-# Terminal 3 — Body: motor control execution
-ros2 run haru_action action_node
-```
+Terminal controls:
+- **[N]** Start new episode
+- **[A]** Accept VLA proposal → log + execute
+- **[C]** Correct → choose **[D]** kinesthetic or **[M]** manual
+- **[S]** Skip this step (execute but don't log)
+- **[E]** End & save episode
+- **[Q]** Cancel episode (delete data)
 
-**Standalone VLM Test (without ROS2):**
+### QLoRA Training (after collecting episodes)
 
 ```bash
-# Test model loading and inference only
+source haru_vla_env/bin/activate
 cd ~/robot_brain_workspace
-python3 brain_test.py
+
+# Check data first (no model load)
+python scripts/train_lora.py --dry-run
+
+# Train (default: rank=16, epochs=3, lr=2e-4)
+python scripts/train_lora.py
+
+# Custom
+python scripts/train_lora.py --epochs 5 --rank 32 --lr 1e-4
+```
+
+Adapter is saved to `data/adapters/adapter_YYYYMMDD_HHMMSS/` and **auto-loaded** on the next `haru-brain` start.
+
+---
+
+## Repository Structure
+
+```
+HARU-embodied-social-ai/
+├── src/
+│   ├── haru_vision/          # Camera node (dual-cam, 3Hz)
+│   │   └── haru_vision/vision_node.py
+│   ├── haru_brain/           # System 2 — Gemma 4 12B
+│   │   └── haru_brain/
+│   │       ├── brain_node.py
+│   │       ├── gemma4_inference.py   # Inference + LoRA auto-load
+│   │       ├── tom_prompt.py         # MindPower ToM + SWM builder
+│   │       ├── session_memory.py     # Cross-session persistence
+│   │       └── adapter_manager.py    # LoRA adapter selector
+│   ├── haru_audio/           # Microphone node (VAD, 16kHz)
+│   │   └── haru_audio/audio_node.py
+│   ├── haru_action/          # System 1 — 50Hz motor control
+│   │   └── haru_action/action_node.py
+│   └── haru_logger/          # HITL episode logger
+│       └── haru_logger/
+│           ├── hitl_node.py          # Interactive correction UI
+│           └── episode_writer.py     # 12-DoF normalized NPZ writer
+├── scripts/
+│   └── train_lora.py         # QLoRA fine-tuning pipeline
+├── data/                     # ← git-ignored (episodes, adapters, memory)
+│   ├── episodes/             # HITL collected steps (step_XXXX.npz)
+│   ├── adapters/             # Trained LoRA adapters
+│   └── memory/               # Session SWM history
+├── launch_vla.sh             # Launch script
+├── HARU_PROJECT_CONTEXT.md   # Full architecture reference
+├── HARU_RUN_COMMANDS.txt     # All commands & usage guide (Korean)
+└── HARU_RESEARCH_GOALS.txt   # M.S. thesis research goals & gap analysis
 ```
 
 ---
 
-## 4. Task and Method
+## ROS2 Topic Map
 
-### Task
-The core task is **real-time gesture-driven HRI**: given a continuous video stream of a person, HARU must recognize the person's intent and respond with a contextually appropriate, expressive motor action — without any pre-defined if-else logic.
-
-### Method
-
-**Dual Vision Fusion**
-The two camera feeds are concatenated into a single wide image before being passed to the VLM. This allows the model to simultaneously reason about facial expressions/gaze (left half) and full-body gestures (right half) in a single forward pass, avoiding the need for separate perception modules.
-
-**VLM as Motion Planner**
-Rather than using the VLM purely for perception and a separate planner for action (as in OpenVLA), HARU delegates the entire decision — *what to say* and *how to move* — to the VLM. The model outputs a full joint-space trajectory as a JSON sequence, which the action node executes directly.
-
-**Software Trajectory Control**
-Dynamixel hardware profile acceleration/velocity are set to 0, giving full trajectory authority to the software. The action node interpolates between keyframes using Smoothstep, producing smooth and natural-looking motion at 50 Hz.
+| Topic | Type | Direction |
+|-------|------|-----------|
+| `/haru_vision/compressed` | `CompressedImage` | vision → brain |
+| `/haru_audio/raw` | `Float32MultiArray` (16kHz PCM) | audio → brain |
+| `/haru_audio/vad` | `Bool` | audio → monitor |
+| `/haru_vla_raw` | `String` (JSON) | brain → logger/action |
+| `/haru_system1_command` | `String` (JSON) | logger → action *(HITL only)* |
+| `/haru_expression` | `Int32` | brain/logger → display |
+| `/haru_speech` | `String` | brain → TTS |
+| `/haru_joints/state` | `Float32MultiArray` (9-dim, 10Hz) | action → logger |
+| `/haru_joints/torque` | `Bool` | logger → action *(kinesthetic)* |
 
 ---
 
-## 5. Experiments
+## Data Format
 
-### 5.1 Setup
-| Component | Spec |
-|---|---|
-| Platform | NVIDIA Jetson (aarch64, JetPack) |
-| VLM | Qwen3-VL-8B-Instruct (float16) |
-| Framework | ROS2, PyTorch 2.4/2.5 |
-| Cameras | Intel RealSense D435 + Logitech C270 |
-| Motors | Dynamixel Protocol 2.0 (×9) |
+Each episode step is stored as a compressed NumPy archive:
 
-### 5.2 Evaluated Scenarios
-The following interaction scenarios were tested:
+```python
+# step_XXXX.npz
+{
+  "image":                (448, 896, 3)  uint8    # dual-camera frame
+  "action":               (12,)          float32  # corrected pose, normalized [-1, 1]
+  "action_vla":           (12,)          float32  # original VLA proposal
+  "is_corrected":         bool                    # whether human corrected this step
+  "language_instruction": bytes                   # task description
+  "speech_text":          bytes                   # what robot said
+  "emotion":              bytes                   # detected emotion label
+}
+```
 
-| Scenario | Expected HARU Response |
-|---|---|
-| User waves hand directly at robot | Both arms wave back with greeting speech |
-| User waves from the left side | Left arm preferentially raised |
-| User waves from the right side | Right arm preferentially raised |
-| User stands still / no gesture | Empty sequence returned, no movement |
-| User makes eye contact only | Subtle head movement, short verbal response |
-
-### 5.3 Latency Analysis
-| Stage | Measured Time |
-|---|---|
-| Camera capture → ROS publish | ~33 ms (3 Hz) |
-| Frame buffer fill (3 frames) | ~1 sec |
-| Qwen3-VL-8B inference (Jetson) | ~3–5 sec |
-| JSON parse → first motor command | < 5 ms |
-| **Total end-to-end latency** | **~4–6 sec** |
+12-DoF order: `expression_id, head_tilt, head_pan, head_roll, r_arm_pitch, l_arm_pitch, r_shoulder_roll, r_elbow_pitch, l_shoulder_roll, l_elbow_pitch, right_wheel, left_wheel`
 
 ---
 
-## 6. Result Analysis
+## Research Contributions
 
-HARU successfully demonstrated **context-aware, autonomous motion generation** driven entirely by a VLM. Key observations:
+1. **Hierarchical Dual-System for Social HRI** — separating deliberative VLM reasoning (System 2) from reactive motor execution (System 1) enables both linguistic quality and physical responsiveness on an edge device
 
-- **Gesture recognition worked reliably** for clear, intentional gestures (waving, pointing). Subtle or ambiguous gestures occasionally produced no-response outputs, which is actually the correct conservative behavior.
-- **Spatial awareness** was effective: the model correctly identified whether the user was on the left or right side of the frame and chose the corresponding arm in most trials.
-- **Smoothstep interpolation** produced noticeably more natural motion compared to a direct position-command baseline, eliminating the jerky start-stop behavior.
-- **Inference latency (~4–6 sec)** is the primary bottleneck. This is a known limitation of running an 8B-parameter model on an edge device without quantization. Applying INT4 quantization or using a smaller VLM (e.g., 3B) could reduce latency significantly.
-- Unlike OpenVLA or Diffusion Policy which require large-scale task-specific training data, **HARU requires zero robot-specific training** — the VLM's general world knowledge and instruction-following capability is leveraged directly.
+2. **MindPower ToM + SWM** — 6-stage Theory of Mind (Perception→Belief→Desire→Intention→Decision→Action) with cross-session Social World Model persistence
 
----
+3. **Kinesthetic Teaching via HITL** — physical pose correction through direct manipulation with torque-off, encoder-capture pipeline; no need to know joint values
 
-## 7. Conclusion
-
-This project presented HARU, a Physical AI robot that uses a Vision-Language Model as its sole decision-making engine for HRI. By treating the VLM as both a perceptual module and a motion planner, the system eliminates the need for hand-crafted rules or robot-specific training datasets.
-
-The main contribution is a lightweight ROS2 pipeline — vision fusion, VLM-based trajectory generation, and smooth Dynamixel control — that enables zero-shot, gesture-responsive interaction on an edge device.
-
-Future work includes reducing inference latency via model quantization, adding speech input, and extending the joint space to support more expressive full-body motions.
+4. **Episodic LoRA for Catastrophic Forgetting Prevention** — each interaction session is distilled into a LoRA adapter, keeping the base model identity intact while accumulating personalized behavior
 
 ---
 
-## 8. References
+## Limitations & Future Work
 
-1. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
-2. Physical Intelligence. **"π0.5: A Vision-Language-Action Model for General Robot Control."** (2025).
-3. Fu, Z., et al. **"HumanPlus: Humanoid Shadowing and Imitation from Humans."** arXiv:2406.10454 (2024).
+| Limitation | Status | Plan |
+|------------|--------|------|
+| ~45–50s inference latency | Known (Jetson + Gemma 4 12B bf16) | VAD-triggered inference, lighter fallback model |
+| No TTS output | `/haru_speech` topic ready | Piper TTS integration |
+| No expression display | `/haru_expression` topic ready | OLED / LED matrix node |
+| Single adapter (no context routing) | Latest adapter only | S-LoRA multi-adapter serving (Phase 6) |
+| SFT only (no reward model) | HITL-SFT | DPO after sufficient data collection |
+| System 1 = Smoothstep only | Adequate for social gestures | ACT / Diffusion Policy (Phase 6) |
+
+---
+
+## References
+
+1. Kahneman, D. *Thinking, Fast and Slow.* Farrar, Straus and Giroux, 2011.
+2. Google DeepMind. **"Gemma 4 Technical Report."** (2026).
+3. Hu, E., et al. **"LoRA: Low-Rank Adaptation of Large Language Models."** ICLR 2022.
 4. Chi, C., et al. **"Diffusion Policy: Visuomotor Policy Learning via Action Diffusion."** RSS 2023.
-5. Qwen Team. **"Qwen3 Technical Report."** Alibaba Group (2025).
+5. Zhao, T., et al. **"Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware (ACT)."** RSS 2023.
+6. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
+7. Dettmers, T., et al. **"QLoRA: Efficient Finetuning of Quantized LLMs."** NeurIPS 2023.
