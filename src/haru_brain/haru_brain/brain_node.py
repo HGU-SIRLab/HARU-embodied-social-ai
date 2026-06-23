@@ -1,23 +1,24 @@
 """
 HARU Brain Node — System 2 (Gemma 4 12B Unified)
 
+Triple-System Phase 5.5: /haru_attention/event 구독으로 트리거.
+60초 고정 타이머 제거 — attention_node가 트리거 전담.
+
 구독:
-  haru_vision/compressed  (CompressedImage)
-  haru_audio/raw          (Float32MultiArray, 선택) — Phase 4.5 오디오 입력
+  haru_attention/event     (String, JSON) — 트리거 + 상황 컨텍스트 (System 3)
+  haru_audio/raw           (Float32MultiArray) — 오디오 데이터 (Gemma 4 멀티모달)
 
 발행:
-  haru_vla_raw            (String, JSON) → hitl_node (HITL 모드) 또는 action_node (직결 모드)
-  haru_expression         (Int32)
-  haru_speech             (String)
+  haru_vla_raw             (String, JSON) → hitl_node 또는 action_node
+  haru_expression          (Int32)
+  haru_speech              (String)       — speech="" 가능 (Gemma 4 침묵 선택)
 
 토픽 라우팅:
   - HITL 모드  : brain → haru_vla_raw → hitl_node → haru_system1_command → action_node
-  - 직결 모드  : brain → haru_vla_raw → action_node (action_node가 haru_vla_raw 구독)
-  brain_node는 항상 haru_vla_raw만 발행. 모드 전환은 action_node/hitl_node 구동 여부로 결정.
+  - 직결 모드  : brain → haru_vla_raw → action_node
 
 파라미터:
-  inference_interval (float, 기본 60.0): 추론 주기 (초)
-  audio_timeout      (float, 기본 5.0):  오디오 수신 후 이 시간 내에만 오디오 첨부
+  audio_timeout  (float, 기본 5.0): 오디오 수신 후 이 시간 내에만 Gemma 4에 첨부
 """
 
 import sys
@@ -40,68 +41,109 @@ from PIL import Image
 
 from .gemma4_inference import Gemma4Inference
 
-_LOAD_TIMEOUT = 180.0  # 초 — 모델 로드 최대 대기
-
 
 class HaruBrainNode(Node):
     def __init__(self):
         super().__init__('haru_brain_node')
 
-        # Gemma 4 12B bf16 추론 시간: ~45-50s. 60s 권장, 테스트 시 낮춰서 사용
-        self.declare_parameter('inference_interval', 60.0)
-        self.declare_parameter('audio_timeout',      5.0)
-        interval      = self.get_parameter('inference_interval').get_parameter_value().double_value
+        self.declare_parameter('audio_timeout', 5.0)
         self._audio_timeout = self.get_parameter('audio_timeout').get_parameter_value().double_value
 
-        self.sub_image = self.create_subscription(
-            CompressedImage,
-            'haru_vision/compressed',
-            self._image_cb,
-            10,
-        )
-        self.sub_audio = self.create_subscription(
-            Float32MultiArray,
-            'haru_audio/raw',
-            self._audio_cb,
-            5,
-        )
+        # ── 구독 ─────────────────────────────────────────────────────────────
+        # System 3 → System 2 트리거 (상황 컨텍스트 포함)
+        self.create_subscription(
+            String, 'haru_attention/event', self._attention_cb, 10)
+        # 카메라 (Gemma 4 멀티모달 입력용)
+        self.create_subscription(
+            CompressedImage, 'haru_vision/compressed', self._image_cb, 10)
+        # 오디오 (Gemma 4 음성 입력용 — 트리거는 attention_node가 담당)
+        self.create_subscription(
+            Float32MultiArray, 'haru_audio/raw', self._audio_cb, 5)
 
-        # brain은 항상 haru_vla_raw만 발행
-        # action_node가 haru_vla_raw 직접 구독(직결) 또는 hitl_node 경유(HITL 모드)
-        self.pub_raw    = self.create_publisher(String, 'haru_vla_raw',     10)
-        self.pub_expr   = self.create_publisher(Int32,  'haru_expression',  10)
-        self.pub_speech = self.create_publisher(String, 'haru_speech',      10)
+        # ── 발행 ─────────────────────────────────────────────────────────────
+        self.pub_raw    = self.create_publisher(String, 'haru_vla_raw',    10)
+        self.pub_expr   = self.create_publisher(Int32,  'haru_expression', 10)
+        self.pub_speech = self.create_publisher(String, 'haru_speech',     10)
 
+        # ── 내부 상태 ─────────────────────────────────────────────────────────
         self._latest_frame: Image.Image | None = None
-        self._frame_lock   = threading.Lock()
+        self._frame_lock = threading.Lock()
+
         self._latest_audio: np.ndarray | None = None
         self._audio_recv_time: float = 0.0
-        self._audio_lock   = threading.Lock()
-        self._inferring    = False
-        self._model_ready  = False
-        self._brain        = None  # 모델 로드 전 AttributeError 방지
+        self._audio_lock = threading.Lock()
 
-        # 모델 로드를 별도 스레드에서 실행 → ROS2 spin 즉시 시작 가능
-        self._load_thread = threading.Thread(target=self._load_model, daemon=True)
-        self._load_thread.start()
+        # 추론 상태 — attention_node와 audio_cb 양쪽에서 접근하므로 lock 필수
+        self._inferring = False
+        self._infer_lock = threading.Lock()
 
-        self._infer_timer = self.create_timer(interval, self._timer_cb)
+        self._model_ready = False
+        self._brain = None
+        self._using_trtllm = False
+        self._mode_tag = 'HF-bf16'
+
+        # 모델 로드 (별도 스레드 — ROS2 spin 즉시 시작 가능)
+        threading.Thread(target=self._load_model, daemon=True).start()
+
         self.get_logger().info(
-            f'HARU Brain Node 시작 (추론 주기 {interval:.1f}s) — 모델 로드 중...'
+            '[Brain] System 2 시작 — attention_node 이벤트 대기 중. 모델 로드 중...'
         )
 
-    # ── 모델 로드 (별도 스레드) ────────────────────────────────────────────────
+    # ── 모델 로드 ────────────────────────────────────────────────────────────
 
     def _load_model(self):
+        # ── 경로 1: TRT-LLM 서버 (고속, ~6~10s) ────────────────────────────
+        try:
+            from .gemma4_trtllm_inference import Gemma4TRTLLMInference
+            trtllm = Gemma4TRTLLMInference()
+            if trtllm.try_connect():
+                trtllm.load()
+                self._brain = trtllm
+                self._using_trtllm = True
+                self._mode_tag = 'TRT-LLM'
+                self._model_ready = True
+                self.get_logger().info(
+                    '[Brain] ✅ TRT-LLM 서버 연결 성공 — 고속 추론 모드 (W4A16 INT4)'
+                )
+                return
+            else:
+                self.get_logger().info('[Brain] TRT-LLM 서버 없음 — HuggingFace 경로로 폴백')
+        except Exception as e:
+            self.get_logger().warn(f'[Brain] TRT-LLM 초기화 실패 ({e}) — HuggingFace 폴백')
+
+        # ── 경로 2: auto_round W4A16 양자화 모델 (중속, ~10~20s) ────────────
+        try:
+            from .gemma4_autoround_inference import Gemma4AutoRoundInference, quantized_model_exists
+            if quantized_model_exists():
+                ar = Gemma4AutoRoundInference()
+                ar.load()
+                self._brain = ar
+                self._using_trtllm = False
+                self._mode_tag = 'AutoRound-W4A16'
+                self._model_ready = True
+                self.get_logger().info(
+                    '[Brain] ✅ auto_round W4A16 양자화 모델 로드 완료 (~3-5× bf16 대비)'
+                )
+                return
+            else:
+                self.get_logger().info(
+                    '[Brain] auto_round 양자화 모델 없음 — '
+                    'scripts/quantize_gemma4_autoround.py 실행 후 사용 가능'
+                )
+        except Exception as e:
+            self.get_logger().warn(f'[Brain] auto_round 로드 실패 ({e}) — bf16 폴백')
+
+        # ── 경로 3: HuggingFace Transformers bf16 (기본 경로, GPU ~15~25s) ──
         try:
             self._brain = Gemma4Inference(load_in_4bit=False)
             self._brain.load()
+            self._using_trtllm = False
             self._model_ready = True
-            self.get_logger().info('[Brain] 모델 준비 완료. 추론 시작.')
+            self.get_logger().info('[Brain] HuggingFace bf16 모델 준비 완료 (GPU 사용).')
         except Exception as e:
             self.get_logger().error(f'[Brain] 모델 로드 실패: {e}')
 
-    # ── 이미지 콜백 ────────────────────────────────────────────────────────────
+    # ── 콜백 ─────────────────────────────────────────────────────────────────
 
     def _image_cb(self, msg: CompressedImage):
         try:
@@ -111,57 +153,106 @@ class HaruBrainNode(Node):
         except Exception as e:
             self.get_logger().warn(f'이미지 디코딩 오류: {e}')
 
-    # ── 오디오 콜백 ────────────────────────────────────────────────────────────
-
     def _audio_cb(self, msg: Float32MultiArray):
+        """오디오 데이터 저장 — 트리거는 하지 않음. attention_node가 트리거 전담."""
         audio = np.array(msg.data, dtype=np.float32)
         with self._audio_lock:
             self._latest_audio    = audio
             self._audio_recv_time = time.time()
         dur = len(audio) / 16000
-        self.get_logger().info(f'[Brain] 오디오 수신: {dur:.2f}s ({len(audio)} 샘플)')
+        self.get_logger().debug(f'[Brain] 오디오 수신: {dur:.2f}s (다음 추론 시 첨부 대기)')
 
-    # ── 추론 타이머 ────────────────────────────────────────────────────────────
-
-    def _timer_cb(self):
-        if not self._model_ready or self._inferring:
+    def _attention_cb(self, msg: String):
+        """
+        System 3 → System 2 트리거.
+        상황 컨텍스트를 파싱해 Gemma 4 추론 시작.
+        """
+        try:
+            event = json.loads(msg.data)
+        except json.JSONDecodeError as e:
+            self.get_logger().warn(f'[Brain] attention event 파싱 실패: {e}')
             return
-        with self._frame_lock:
-            frame = self._latest_frame
-        if frame is None:
-            return
-        # 오디오가 최근 audio_timeout 초 이내에 수신됐으면 첨부
-        with self._audio_lock:
-            audio = self._latest_audio
-            if audio is not None:
-                age = time.time() - self._audio_recv_time
-                if age > self._audio_timeout:
-                    audio = None
-                else:
-                    self._latest_audio = None  # 한 번만 사용
-        self._inferring = True
-        threading.Thread(target=self._infer_worker, args=(frame, audio), daemon=True).start()
 
-    def _infer_worker(self, frame: Image.Image, audio: np.ndarray | None):
+        if not event.get('trigger', False):
+            return
+
+        context  = event.get('context', '')
+        state    = event.get('state', '?')
+
+        self.get_logger().info(f'[Brain] 트리거 수신 [{state}]: {context[:60]}')
+        self._run_infer(context=context, source=state)
+
+    # ── 추론 ─────────────────────────────────────────────────────────────────
+
+    def _run_infer(self, context: str, source: str):
+        if not self._model_ready:
+            self.get_logger().debug('[Brain] 모델 미준비 — 트리거 무시')
+            return
+
+        with self._infer_lock:
+            if self._inferring:
+                self.get_logger().info(f'[Brain] 추론 중 — [{source}] 트리거 건너뜀')
+                return
+
+            with self._frame_lock:
+                frame = self._latest_frame
+            if frame is None:
+                self.get_logger().warn('[Brain] 카메라 프레임 없음 — 트리거 무시')
+                return
+
+            # VAD 트리거인 경우 최신 오디오 첨부 (audio_timeout 내에 수신된 것만)
+            with self._audio_lock:
+                audio = self._latest_audio
+                if audio is not None:
+                    age = time.time() - self._audio_recv_time
+                    if age > self._audio_timeout:
+                        audio = None
+                    else:
+                        self._latest_audio = None  # 한 번만 사용
+
+            self._inferring = True
+
+        audio_info = f'+오디오({len(audio)/16000:.1f}s)' if audio is not None else '비전만'
+        self.get_logger().info(f'[Brain|{self._mode_tag}] [{source}] 추론 시작 ({audio_info})')
+        threading.Thread(
+            target=self._infer_worker,
+            args=(frame, audio, context, source),
+            daemon=True,
+        ).start()
+
+
+    def _infer_worker(
+        self,
+        frame: Image.Image,
+        audio: np.ndarray | None,
+        context: str,
+        source: str,
+    ):
         try:
             t0 = time.time()
-            resp = self._brain.infer(frame, audio=audio)
+            resp = self._brain.infer(frame, user_context=context, audio=audio)
             elapsed = time.time() - t0
             audio_tag = f' +audio({len(audio)/16000:.1f}s)' if audio is not None else ''
+            speech_preview = f'"{resp.speech[:40]}"' if resp.speech else '(침묵)'
             self.get_logger().info(
-                f'[Brain] {elapsed:.1f}s{audio_tag} | emotion={resp.emotion} | '
-                f'speech={resp.speech[:40]!r}'
+                f'[Brain] [{source}] {elapsed:.1f}s{audio_tag} | '
+                f'emotion={resp.emotion} | speech={speech_preview}'
             )
-            self._publish(resp)
+            self._publish(resp, context=context, source=source)
         except Exception as e:
             self.get_logger().error(f'[Brain] 추론 오류: {e}')
         finally:
-            self._inferring = False
+            with self._infer_lock:
+                self._inferring = False
 
-    # ── 발행 ──────────────────────────────────────────────────────────────────
+    # ── 발행 ─────────────────────────────────────────────────────────────────
 
-    def _publish(self, resp):
+    def _publish(self, resp, context: str = '', source: str = ''):
         cmd = resp.to_command_dict()
+        if context:
+            cmd['attention_context'] = context
+        if source:
+            cmd['attention_source'] = source
         json_str = json.dumps(cmd, ensure_ascii=False)
 
         raw_msg = String()
@@ -173,12 +264,12 @@ class HaruBrainNode(Node):
         self.pub_expr.publish(expr_msg)
 
         speech_msg = String()
-        speech_msg.data = resp.speech
+        speech_msg.data = resp.speech  # "" 가능 — TTS 노드가 빈 문자열이면 침묵
         self.pub_speech.publish(speech_msg)
 
         act = cmd['action']
         self.get_logger().info(
-            f'[Pub] expr={resp.expression_id} '
+            f'[Pub] expr={resp.expression_id} speech={"(침묵)" if not resp.speech else repr(resp.speech[:30])} '
             f'head=({act["head_tilt"]:.0f},{act["head_pan"]:.0f},{act["head_roll"]:.0f})'
         )
 

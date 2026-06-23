@@ -17,6 +17,8 @@
   language_instruction: bytes
   speech_text        : bytes
   emotion            : bytes
+  attention_source   : bytes (FSM 상태: CONVERSING / APPEARED_TO_SILENT 등)
+  attention_context  : bytes (상황 컨텍스트 문자열)
 """
 
 import json
@@ -98,6 +100,8 @@ class EpisodeWriter:
         speech_text: str,
         emotion: str,
         is_corrected: bool,
+        attention_source: str = '',
+        attention_context: str = '',
     ) -> int:
         if self.episode_dir is None:
             raise RuntimeError('start_episode() 먼저 호출하세요.')
@@ -115,6 +119,8 @@ class EpisodeWriter:
             language_instruction=np.bytes_(language_instruction.encode()),
             speech_text=np.bytes_(speech_text.encode()),
             emotion=np.bytes_(emotion.encode()),
+            attention_source=np.bytes_(attention_source.encode()),
+            attention_context=np.bytes_(attention_context.encode()),
         )
         idx = self.step_count
         self.step_count += 1

@@ -1,7 +1,7 @@
 ================================================================
 HARU 실행 명령어 & 운용 가이드
-System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
-최종 업데이트: 2026-06-19 (Phase 5 코드 완성 + 전체 버그수정)
+System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B | System 1: haru_action (50Hz)
+최종 업데이트: 2026-06-23 (Phase 5.6: GPU 복구 + TRT-LLM/AutoRound 추론 가속 경로 추가)
 ================================================================
 
 
@@ -16,14 +16,13 @@ System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
 [ 1. 실행 모드 선택 ]
 ================================================================
 
-■ 일반 운용 모드 (데이터 수집 없이 로봇만 동작)
+■ 일반 운용 모드 (Triple-System 전체)
   haru-ws && haru-all
+  (내부: vision + attention + brain + audio + action)
 
-■ HITL 데이터 수집 모드 (학습 데이터 만들기)
+■ HITL 데이터 수집 모드
   haru-ws && haru-hitl
-
-■ 오디오 포함 전체 파이프라인 (Phase 4.5)
-  haru-ws && ./launch_vla.sh audio
+  (내부: vision + attention + brain + audio + action(hitl) + hitl_logger)
 
 ■ 개별 노드 단독 실행 (디버깅용)
   haru-vision      # 카메라만
@@ -31,149 +30,140 @@ System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
   haru-brain       # Gemma 4만 (모델 로드 ~24초)
   haru-audio       # 마이크 VAD만
 
+■ 주의 노드 단독 테스트 (Phase 5.5 신규)
+  ./launch_vla.sh attention_only
+  # /haru_attention/event 토픽으로 상황 분류 확인
+
 
 ================================================================
-[ 2. HITL 데이터 수집 — 상세 사용법 ]
+[ 2. Triple-System 동작 원리 ]
+================================================================
+
+System 3 (haru_attention) — 항상 켜진 경량 지각층:
+  · 카메라 프레임 → OpenCV 얼굴 감지 (~5ms, CPU)
+  · 프레임 차분 → 모션 감지
+  · /haru_audio/vad 구독 → 발화 여부 인지
+  · 5-State FSM으로 상황 분류:
+
+    상태          의미                    brain 트리거
+    EMPTY         방에 아무도 없음         없음
+    APPEARED      사람 등장 (5초 대기)     없음 (먼저 말 걸 기회)
+    APPEARED→     5초 지나도 침묵         즉시 트리거
+    PRESENT_SILENT
+    CONVERSING    대화 중                  VAD 완료 시 즉시
+    PRESENT_SILENT 있는데 안 말함          120s 주기
+
+System 2 (haru_brain) — 이벤트 드리븐 판단층:
+  · /haru_attention/event 구독 (60초 타이머 제거됨)
+  · 상황 컨텍스트를 Gemma 4 프롬프트에 포함
+  · Gemma 4가 말할지 침묵할지 자율 결정
+
+  예시 컨텍스트:
+    "사람이 7초 전에 등장했고 아직 말을 걸지 않음. 먼저 인사할지 판단하세요."
+    "사용자가 방금 말을 마쳤음. 자연스럽게 응답하세요."
+    "10분째 상호작용 없음. 조심스럽게 안부를 물을지 판단하세요."
+
+Gemma 4 침묵 선택 (Phase 5.5 신규):
+  · speech: "" 출력 시 → 발화 없음, 몸짓만 실행
+  · 예: 사람 막 등장 → 고개 돌려 시선 맞추되 발화 없음 (자연스러운 비언어 반응)
+
+
+================================================================
+[ 3. HITL 데이터 수집 — 상세 사용법 ]
 ================================================================
 
 목적: HARU가 잘못된 행동을 할 때 "이렇게 했어야 해"를 가르치는
       데이터를 쌓는 과정. 이 데이터로 LoRA 어댑터를 학습시킴.
+      Phase 5.5부터: 상황 상태도 함께 저장 → 풍부한 학습 신호
 
 ------------------------------------------------------------
-2-1. 실행
+3-1. 실행
 ------------------------------------------------------------
 
   haru-ws && haru-hitl
 
-  (내부적으로 4개 노드가 동시에 뜸)
-    vision_node   — 카메라 프레임 발행
-    action_node   — hitl_mode=true (hitl_node 명령 대기)
-    brain_node    — Gemma 4 추론 (60초 주기)
-    hitl_node     — 터미널 인터페이스 (포그라운드)
+  (내부적으로 6개 노드가 동시에 뜸)
+    vision_node    — 카메라 프레임 발행
+    attention_node — 상황 분류 + brain 트리거 (Phase 5.5 신규)
+    audio_node     — 마이크 VAD
+    action_node    — hitl_mode=true
+    brain_node     — Gemma 4 추론 (attention event 기반)
+    hitl_node      — 터미널 인터페이스 (포그라운드)
 
 ------------------------------------------------------------
-2-2. 에피소드 흐름
+3-2. 에피소드 흐름
 ------------------------------------------------------------
 
-  [N] → 에피소드 시작 (새 episode_YYYYMMDD_HHMMSS/ 폴더 생성)
+  [N] → 에피소드 시작
       ↓
-  Gemma 4가 60초마다 장면을 보고 JSON 제안 출력
+  attention_node가 상황을 감지하면 brain_node 트리거
+  (사람 등장 5초 후, 또는 VAD 완료 시)
+      ↓
+  Gemma 4가 상황 컨텍스트 포함해 JSON 제안 출력
       ↓
   터미널에 제안 표시:
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   [에피소드 1 | 스텝 0] VLA 제안
+   [에피소드 1 | 스텝 0] VLA 제안 [상황: APPEARED_7s]
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     표정  : empathy (5)
     감정  : empathy
     머리  : tilt=2400  pan=2057  roll=2041
     오른팔: 1738
     바퀴  : right=0  left=0
-    발화  : 많이 힘드셨나요?
+    발화  : 많이 힘드셨나요?   (speech="" 이면 "(침묵 — 몸짓만)")
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    [A] 승인   [C] 교정   [S] 스킵   [E] 에피소드 종료
       ↓
-  사람이 [A] / [C] / [S] 입력
-      ↓
-  [E] → 에피소드 저장 (metadata.json + step_XXXX.npz 파일들)
+  [E] → 에피소드 저장 (metadata.json + step_XXXX.npz)
 
 ------------------------------------------------------------
-2-3. 키 설명
+3-3. 키 설명 (변경 없음)
 ------------------------------------------------------------
 
-  [A] 승인
-      - Gemma 4 제안이 적절할 때 사용
-      - 제안된 JSON 그대로 로봇에 전송 & step_XXXX.npz 저장
-      - is_corrected = False
-      - 학습 효과: "이 상황에서 이 판단은 옳다" 강화
-
-  [C] 교정  ← 핵심 기능
-      - Gemma 4 판단이 틀렸을 때 사용
-      - 교정 방법을 선택:
-
-      [D] 직접 시연 (키네스테틱 티칭) ← 권장
-          1. 토크 OFF → 관절이 자유롭게 움직여짐
-          2. 손으로 로봇을 원하는 자세로 직접 조작
-          3. Enter → 인코더 값 자동 캡처 후 토크 ON
-          4. 표정 ID·발화·바퀴는 별도로 수동 입력
-          ※ 관절 숫자를 몰라도 됨
-
-      [M] 수동 입력 (숫자 직접 입력)
-          아래 항목들을 직접 숫자로 입력 (Enter = 현재값 유지):
-          · 표정 ID (0~7)
-            0=neutral  1=joy  2=sadness  3=curiosity
-            4=surprise  5=empathy  6=thinking  7=concern
-          · 발화 텍스트 (한국어 문장 직접 입력)
-          · head_tilt  (1500~3086, 중립 2048)  — 고개 끄덕임
-          · head_pan   (1043~3071, 중립 2057)  — 고개 좌우
-          · head_roll  (1630~2452, 중립 2041)  — 고개 기울기
-          · r_arm_pitch     (1024~2451, 중립 1738)
-          · l_arm_pitch     (37~1542,   중립 790)
-          · r_shoulder_roll (1000~2050, 중립 1525)
-          · r_elbow_pitch   (2047~3062, 중립 2555)
-          · l_shoulder_roll (1047~2056, 중립 1552)
-          · l_elbow_pitch   (1021~2007, 중립 1514)
-          · right_wheel / left_wheel (-300~300, 이동 불필요시 0)
-
-      - 교정된 값으로 로봇 실행 & 저장 (is_corrected = True)
-      - 학습 효과: "이 상황에서 네 판단 대신 이렇게 해야 해" 교정
-
-  [S] 스킵
-      - 이 스텝은 데이터로 쓰기 애매할 때 사용
-      - 로봇은 Gemma 4 제안대로 실행되지만 저장은 안 됨
-      - 학습 데이터에 포함되지 않음
-
+  [A] 승인  — Gemma 4 제안 그대로 실행 & 저장 (is_corrected=False)
+  [C] 교정  — [D] 키네스테틱 티칭 또는 [M] 수동 입력
+  [S] 스킵  — 로그 저장 안 함
   [E] 에피소드 종료 & 저장
-      - metadata.json 생성 후 에피소드 확정
-      - 이후 새 에피소드 시작 가능 [N]
-
   [Q] 에피소드 취소
-      - 현재 에피소드 전체 삭제 (data/episodes/에서 폴더 제거)
-      - 잘못 수집됐다 싶을 때 사용
 
 ------------------------------------------------------------
-2-4. 수집 전략
+3-4. 수집 전략
 ------------------------------------------------------------
 
   추천 에피소드 구성:
-    - 에피소드 1개 = 5~20 스텝 (한 상호작용 맥락)
+    - 에피소드 1개 = 5~20 스텝
     - 첫 LoRA 학습 최소 요건: 20~30 스텝 이상 (교정 포함)
     - 교정 비율 높을수록 학습 신호 강함
 
-  교정을 많이 하면 좋은 상황:
-    - 상황에 어울리지 않는 표정 (슬픈 상황에 joy=1 출력 등)
-    - 발화가 너무 짧거나 맥락과 무관할 때
-    - 머리 방향이 상황과 안 맞을 때
-
-  데이터 확인:
-    ls -lh data/episodes/                    # 에피소드 목록
-    ls data/episodes/episode_XXXXXX/         # 스텝 파일 목록
-    python -c "
-    import numpy as np
-    d = np.load('data/episodes/episode_XXXXXX/step_0000.npz', allow_pickle=False)
-    print({k: d[k].shape if hasattr(d[k], 'shape') else d[k].item() for k in d})"
+  Phase 5.5 추가 전략:
+    - 다양한 상황 상태에서 수집
+      · 사람 처음 등장 시 (APPEARED→PRESENT_SILENT) 인사 교정
+      · 대화 중 (CONVERSING) 응답 교정
+      · 오래 있다가 (PRESENT_SILENT) 안부 교정
+    - 상황별로 다른 행동이 저장됨 → LoRA가 상황-행동 패턴 학습
 
 
 ================================================================
-[ 3. LoRA 학습 (에피소드 수집 후) ]
+[ 4. LoRA 학습 (에피소드 수집 후) ]
 ================================================================
 
 ------------------------------------------------------------
-3-1. 학습 흐름 개요
+4-1. 학습 흐름
 ------------------------------------------------------------
 
   에피소드 수집 (HITL)
         ↓
-  data/episodes/  ← step_XXXX.npz 누적
+  data/episodes/  ← step_XXXX.npz (상황 상태 포함)
         ↓
   python scripts/train_lora.py
         ↓
-  data/adapters/adapter_YYYYMMDD_HHMMSS/  ← LoRA 어댑터 저장
+  data/adapters/adapter_YYYYMMDD_HHMMSS/
         ↓
   다음 haru-brain 실행 시 자동 로드
   "[Brain] LoRA 어댑터 로드 완료: adapter_XXXXXXXX" 로그 확인
 
 ------------------------------------------------------------
-3-2. 학습 실행 명령
+4-2. 학습 실행 명령
 ------------------------------------------------------------
 
   source /home/herobot/robot_brain_workspace/haru_vla_env/bin/activate
@@ -188,48 +178,22 @@ System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
   # 강한 학습 (데이터 많을 때)
   python scripts/train_lora.py --epochs 5 --rank 32
 
-  # 전체 옵션
-  python scripts/train_lora.py \
-    --epochs   3      \   # 반복 횟수 (기본 3)
-    --rank     16     \   # LoRA rank (기본 16, 클수록 표현력↑ 메모리↑)
-    --alpha    32     \   # LoRA alpha = rank × 2 권장
-    --lr       2e-4   \   # 학습률 (진동 시 1e-4로 낮추기)
-    --grad-acc 4          # gradient accumulation step (기본 4)
-
 ------------------------------------------------------------
-3-3. LoRA가 하는 일
+4-3. 어댑터 관리
 ------------------------------------------------------------
 
-  Gemma 4 12B 베이스 모델 (22GB, 고정)
-        +
-  LoRA 어댑터 (~수십 MB, 학습됨)
-        =
-  "이 사용자·이 환경에서의 행동 편차"
+  ls data/adapters/                          # 생성된 어댑터 목록
+  # brain_node는 항상 mtime 기준 최신 어댑터 자동 선택
 
-  - 베이스 모델 가중치는 절대 변경 안 됨 → 파국적 망각 방지
-  - 어댑터만 교체하면 여러 사용자/환경에 독립적으로 적용 가능
-  - 새 데이터 수집 → 새 어댑터 학습 → 자동 교체 (이전 어댑터 보존)
-
-------------------------------------------------------------
-3-4. 어댑터 관리
-------------------------------------------------------------
-
-  ls data/adapters/                         # 생성된 어댑터 목록
-  cat data/adapters/adapter_XXXX/README.md  # 해당 어댑터 학습 정보
-  # brain_node는 항상 가장 최근 어댑터를 자동 선택
-
-  # 특정 어댑터 이전 버전으로 롤백하려면:
-  # adapter_manager.py의 latest_adapter()가 mtime(수정 시간) 기준으로 최신 선택하므로
-  # 원하지 않는 최신 어댑터 폴더의 타임스탬프를 과거로 바꾸거나 이름 앞에 _ 붙이면 됨
+  # 어댑터 롤백 (이전 버전으로):
   mv data/adapters/adapter_NEW data/adapters/_disabled_adapter_NEW
 
 
 ================================================================
-[ 4. 장기 기억 (세션 간 SWM) ]
+[ 5. 장기 기억 (세션 간 SWM) ]
 ================================================================
 
   자동 동작 — 별도 설정 불필요
-  brain_node 종료 시 자동 저장, 시작 시 자동 복원
 
   저장 위치: data/memory/swm_history.json
   보존 용량: 최근 50 대화 쌍 (디스크), 추론 시 최근 4쌍 사용
@@ -237,85 +201,72 @@ System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
   이력 확인:
     cat data/memory/swm_history.json
 
-  이력 초기화 (새로 시작):
+  이력 초기화:
     rm data/memory/swm_history.json
 
 
 ================================================================
-[ 5. 전체 학습 사이클 요약 ]
-================================================================
-
-  1일차  haru-hitl 으로 에피소드 수집
-         └→ 20~30 스텝 (교정 포함)
-
-  수집 후 python scripts/train_lora.py
-         └→ data/adapters/adapter_20260618_XXXXXX/ 생성
-
-  2일차  haru-hitl 재실행 → 어댑터 자동 로드
-         └→ 어제보다 개선된 행동 확인
-         └→ 여전히 이상한 부분은 다시 [C]로 교정 & 저장
-
-  ...반복...
-
-  수주 후 python scripts/train_lora.py (누적된 모든 에피소드로 재학습)
-         └→ 더 강력한 어댑터 생성
-
-
-================================================================
-[ 6. 토픽 구조 ]
+[ 6. 토픽 구조 (Phase 5.5 Triple-System) ]
 ================================================================
 
   [카메라] → haru_vision → /haru_vision/compressed
   [마이크] → haru_audio  → /haru_audio/raw (16kHz float32)
                          → /haru_audio/vad (Bool)
 
+  haru_attention (System 3, 경량, 항상 실행)
+    입력: /haru_vision/compressed, /haru_audio/vad
+    출력: /haru_attention/event (String JSON)
+
   haru_brain (System 2, Gemma 4 12B)
-    입력: /haru_vision/compressed, /haru_audio/raw
-    출력: /haru_vla_raw        (JSON, 항상 여기만 발행)
-          /haru_expression     (Int32)
-          /haru_speech         (String)
+    입력: /haru_attention/event (트리거 + 컨텍스트)
+          /haru_audio/raw (오디오 데이터, VAD 트리거 시 첨부)
+    출력: /haru_vla_raw (JSON)
+          /haru_expression (Int32)
+          /haru_speech (String)
 
   라우팅:
     직결 모드 (기본):  /haru_vla_raw → action_node
     HITL 모드:        /haru_vla_raw → hitl_node → /haru_system1_command → action_node
-
-  action_node 파라미터:
-    hitl_mode:=false  직결 (기본)
-    hitl_mode:=true   HITL (haru-hitl 실행 시 자동 설정)
 
 
 ================================================================
 [ 7. 모니터링 ]
 ================================================================
 
-  ros2 topic echo /haru_vla_raw          # Gemma 4 원본 제안 JSON
-  ros2 topic echo /haru_system1_command  # 최종 실행 명령 (HITL 교정 반영)
-  ros2 topic echo /haru_expression       # 표정 ID
-  ros2 topic echo /haru_speech           # 발화 텍스트
-  ros2 topic hz   /haru_vision/compressed
-  ros2 topic echo /haru_audio/vad        # 발화 감지 여부
-  ros2 node list
+  # Triple-System 상황 확인 (Phase 5.5 핵심)
+  ros2 topic echo /haru_attention/event     # 상황 상태 + 컨텍스트 실시간 확인
+
+  # 기존 모니터링
+  ros2 topic echo /haru_vla_raw             # Gemma 4 원본 제안 JSON
+  ros2 topic echo /haru_system1_command     # 최종 실행 명령 (HITL 교정 반영)
+  ros2 topic echo /haru_expression          # 표정 ID
+  ros2 topic echo /haru_speech              # 발화 텍스트 (speech="" 이면 침묵)
+  ros2 topic echo /haru_audio/vad           # 발화 감지 여부
+  ros2 topic hz   /haru_vision/compressed   # 카메라 프레임율
+  ros2 node list                            # 실행 중인 노드 확인
 
 
 ================================================================
-[ 8. 모터 직접 테스트 ]
+[ 8. attention_node 파라미터 조정 ]
 ================================================================
 
-  ros2 topic pub --once /haru_system1_command std_msgs/msg/String \
-    '{"data": "{\"speech\": \"안녕\", \"expression_id\": 1, \"action\": {\"head_tilt\": 2296, \"head_pan\": 2057, \"head_roll\": 2041, \"r_arm_pitch\": 1738, \"l_arm_pitch\": 790, \"r_shoulder_roll\": 1525, \"r_elbow_pitch\": 2555, \"l_shoulder_roll\": 1552, \"l_elbow_pitch\": 1514, \"right_wheel\": 0.0, \"left_wheel\": 0.0}, \"duration\": 2.0}"}'
+  # 얼굴 등장 후 대기 시간 조정 (기본 5초)
+  ros2 run haru_attention attention_node --ros-args -p appeared_wait_sec:=3.0
 
-  관절 범위 참고:
-    head_tilt       1500~3086  (중립 2048) — 고개 끄덕임
-    head_pan        1043~3071  (중립 2057) — 고개 좌우
-    head_roll       1630~2452  (중립 2041) — 고개 기울기
-    r_arm_pitch     1024~2451  (중립 1738)
-    l_arm_pitch     37~1542    (중립 790)
-    r_shoulder_roll 1000~2050  (중립 1525)
-    r_elbow_pitch   2047~3062  (중립 2555)
-    l_shoulder_roll 1047~2056  (중립 1552)
-    l_elbow_pitch   1021~2007  (중립 1514)
-    right_wheel     -300~300   (정지 0)
-    left_wheel      -300~300   (정지 0)
+  # PRESENT_SILENT 주기적 체크인 간격 (기본 120초)
+  ros2 run haru_attention attention_node --ros-args -p idle_trigger_sec:=90.0
+
+  # 얼굴 감지 민감도 (얼굴로 인정할 최소 크기, 기본 80px)
+  ros2 run haru_attention attention_node --ros-args -p face_min_size:=60
+
+  # 모션 감지 임계값 (기본 8.0, 낮을수록 민감)
+  ros2 run haru_attention attention_node --ros-args -p motion_threshold:=5.0
+
+  # 얼굴 소실 후 EMPTY 전환 대기 (기본 3초)
+  ros2 run haru_attention attention_node --ros-args -p face_lost_timeout:=3.0
+
+  # 대화 종료 판정 침묵 시간 (기본 30초)
+  ros2 run haru_attention attention_node --ros-args -p conversation_timeout:=20.0
 
 
 ================================================================
@@ -332,43 +283,190 @@ System 2: Gemma 4 12B Unified | System 1: haru_action (50Hz)
 
 
 ================================================================
-[ 10. 빌드 ]
+[ 10. 모터 직접 테스트 ]
 ================================================================
 
-  cd /home/herobot/robot_brain_workspace
-  source /opt/ros/humble/setup.bash
-  colcon build --symlink-install
-  source install/setup.bash
+  ros2 topic pub --once /haru_system1_command std_msgs/msg/String \
+    '{"data": "{\"speech\": \"안녕\", \"expression_id\": 1, \"action\": {\"head_tilt\": 2296, \"head_pan\": 2057, \"head_roll\": 2041, \"r_arm_pitch\": 1738, \"l_arm_pitch\": 790, \"r_shoulder_roll\": 1525, \"r_elbow_pitch\": 2555, \"l_shoulder_roll\": 1552, \"l_elbow_pitch\": 1514, \"right_wheel\": 0.0, \"left_wheel\": 0.0}, \"duration\": 2.0}"}'
+
+  관절 범위 참고:
+    head_tilt       1500~3086  (중립 2048)
+    head_pan        1043~3071  (중립 2057)
+    head_roll       1630~2452  (중립 2041)
+    r_arm_pitch     1024~2451  (중립 1738)
+    l_arm_pitch     37~1542    (중립 790)
+    r_shoulder_roll 1000~2050  (중립 1525)
+    r_elbow_pitch   2047~3062  (중립 2555)
+    l_shoulder_roll 1047~2056  (중립 1552)
+    l_elbow_pitch   1021~2007  (중립 1514)
+    right_wheel     -300~300   (정지 0)
+    left_wheel      -300~300   (정지 0)
 
 
 ================================================================
-[ 11. 주의사항 ]
+[ 11. 빌드 & 패키지 설치 ]
+================================================================
+
+  ※ setuptools 81.0.0이 colcon --symlink-install의 editable install을
+     지원하지 않으므로, haru_brain / haru_attention은 수동 install 구조를 사용.
+
+  일반 패키지 (haru_audio, haru_vision, haru_action, haru_logger):
+    cd /home/herobot/robot_brain_workspace
+    source /opt/ros/humble/setup.bash
+    colcon build --symlink-install --packages-select haru_audio haru_vision haru_action haru_logger
+    source install/setup.bash
+
+  haru_brain / haru_attention (수동 install):
+    - Python 소스: src/{pkg}/{pkg}/*.py → symlink from install/{pkg}/lib/python3.10/site-packages/{pkg}
+    - 소스 파일 수정은 즉시 반영됨 (relink 불필요)
+    - egg-info: install/{pkg}/lib/python3.10/site-packages/{pkg}-{ver}-py3.10.egg-info/
+    - 콘솔 스크립트: install/{pkg}/lib/{pkg}/{node} (chmod +x)
+    - 재설치 필요 시 (새 노드 추가 등):
+        python3 /home/herobot/robot_brain_workspace/scripts/manual_install.py  # TODO: 작성 예정
+        # 또는 위 패턴을 보고 수동으로 mkdir + ln -sf 수행
+
+
+================================================================
+[ 12. 주의사항 ]
 ================================================================
 
   - torch: PyPI pip install torch 절대 금지 (Jetson NVIDIA 전용 wheel)
   - 중국 모델 사용 금지 (Qwen, DeepSeek, GLM, InternVLA 등)
-  - Gemma 4 12B: bitsandbytes 4-bit 비호환 → bf16 22GB 사용 (정상)
-  - Gemma 4 추론: 약 45~50초 소요 (inference_interval 기본 60초)
+  - Gemma 4 12B: bitsandbytes 4-bit 비호환 (SM87 커널 미지원) → auto_round/TRT-LLM 경로로 4-bit 구현
+  - torch: Jetson 전용 wheel 사용 중 (2.5.0a0+nv24.08, CUDA 12.6 호환)
+  - Gemma 4 추론 속도: bf16 GPU ~15-30s / auto_round W4A16 ~10-20s / TRT-LLM ~6-10s
+  - attention_node: CPU 전용 (GPU는 Gemma 4 전용)
+  - 60초 타이머는 Phase 5.5에서 제거됨 — attention_node가 트리거 전담
+  - speech: "" 빈 문자열 → 발화 없음, 몸짓만 실행 (정상 동작)
   - vision_node 충돌 시: source ~/.bashrc 후 재실행
-  - HITL 교정 시 Enter만 누르면 현재값 유지 (모든 필드 교정 불필요)
-  - [D] 키네스테틱 티칭 시: [D/M] 프롬프트가 나타난 후 타이핑할 것
-    (프롬프트 이전 입력은 내부에서 무시됨)
 
 ================================================================
-[ 2026-06-19 버그수정 이력 ]
+[ 13. 추론 가속 (Phase 5.6) ]
+================================================================
+
+  brain_node.py는 시작 시 자동으로 아래 순서로 추론 경로 선택:
+    1순위: TRT-LLM 서버 (포트 8000) → ~6-10s
+    2순위: auto_round W4A16 양자화 모델 → ~10-20s
+    3순위: HF bf16 GPU (기본값, 즉시 사용 가능) → ~15-30s
+
+------------------------------------------------------------
+13-1. auto_round W4A16 양자화 (1-3시간, 1회 실행)
+------------------------------------------------------------
+
+  source /home/herobot/robot_brain_workspace/haru_vla_env/bin/activate
+  nohup python3 /home/herobot/robot_brain_workspace/scripts/quantize_gemma4_autoround.py \
+    2>&1 | tee /tmp/quantize.log &
+  echo "양자화 PID: $!"
+
+  # 진행 상황 확인:
+  tail -f /tmp/quantize.log
+
+  # 완료 확인:
+  ls /home/herobot/robot_brain_workspace/data/gemma4_autoround_w4a16/
+  # → config.json, *.safetensors 파일이 있으면 완료
+
+  완료 후: 다음 haru-brain 실행 시 자동으로 auto_round 경로 선택
+
+------------------------------------------------------------
+13-2. TRT-LLM Docker 빌드 (8-16시간, 1회 실행)
+------------------------------------------------------------
+
+  # 빌드 시작 (백그라운드)
+  cd /home/herobot/herobot_ws/jetson-containers
+  nohup bash /home/herobot/robot_brain_workspace/scripts/build_trtllm_docker.sh \
+    2>&1 | tee /tmp/trtllm_build.log &
+
+  # 진행 상황 확인:
+  tail -f /tmp/trtllm_build.log
+  docker images | grep tensorrt   # 완료 시 이미지 출력
+
+  # 빌드 완료 후 → 엔진 변환 (1-3시간):
+  bash /home/herobot/robot_brain_workspace/scripts/convert_gemma4_trtllm.sh
+
+  # 변환 완료 후 → 서버 실행:
+  bash /home/herobot/robot_brain_workspace/scripts/run_trtllm_server.sh
+
+  # 서버 확인:
+  curl http://localhost:8000/v1/models
+
+------------------------------------------------------------
+13-3. 추론 경로 확인 (실행 중 로그)
+------------------------------------------------------------
+
+  로그에서 확인:
+    "[Brain] ✅ TRT-LLM 서버 연결 성공"      → 최속 경로 (~6-10s)
+    "[Brain] ✅ auto_round W4A16 모델 로드"   → 중속 경로 (~10-20s)
+    "[Brain] HuggingFace bf16 모델 준비 완료" → 기본 경로 (~15-30s)
+
+================================================================
+[ 2026-06-23 Phase 5.6 진행 중 — 변경 이력 ]
+================================================================
+
+  [핵심 버그 수정]
+  torch       : torch 2.12.1+cu130 (CUDA 13.0 요구, 시스템 CUDA 12.6 불일치)
+                → torch 2.5.0a0+nv24.08 (Jetson 전용, CUDA 12.6 호환) 교체
+                → GPU 61.4 GB 통합 메모리 정상 활성화 (이전: GPU 완전 비활성화)
+  torchvision : 버전 불일치 broken torchvision 제거
+                → auto_round 0.13.1 import 정상화
+
+  [구현]
+  brain_node  : 3-tier 추론 경로 자동 선택 (TRT-LLM → AutoRound → HF bf16)
+                self._mode_tag으로 현재 경로 추적
+  gemma4_trtllm_inference.py   : TRT-LLM OpenAI 호환 서버 추론 클래스 (신규)
+  gemma4_autoround_inference.py: auto_round W4A16 양자화 추론 클래스 (신규)
+  quantize_gemma4_autoround.py : W4A16 양자화 실행 스크립트 (신규)
+  build_trtllm_docker.sh       : TRT-LLM Docker 빌드 스크립트 (신규)
+  convert_gemma4_trtllm.sh     : TRT-LLM 엔진 변환 스크립트 (신규)
+  run_trtllm_server.sh         : TRT-LLM 서버 실행 스크립트 (신규)
+
+  [환경 변경]
+  docker      : herobot 계정 docker 그룹 추가 완료 (sudo usermod -aG docker herobot)
+  jetson-cont : git pull 완료 (ffmpeg:8.0 → ffmpeg:8.1 의존성 업데이트)
+
+================================================================
+[ 2026-06-22 Phase 5.5 완료 — 변경 이력 ]
+================================================================
+
+  [구현]
+  attention   : haru_attention 패키지 신규 생성
+                5-State FSM (EMPTY/APPEARED/CONVERSING/PRESENT_SILENT/LONG_IDLE)
+                얼굴감지 (Haar Cascade, ~5ms CPU) + 모션감지 + VAD 통합
+  brain_node  : 60초 타이머 제거 → /haru_attention/event 구독
+                상황 컨텍스트를 infer() user_context로 전달
+                _publish()에 attention_context/source 필드 추가
+  tom_prompt  : SYSTEM_PROMPT에 침묵 규칙 추가 (speech: "" 허용)
+                상황 컨텍스트 문자열을 user_text 앞에 삽입
+  hitl_node   : VLA 제안 화면에 FSM 상태 + 컨텍스트 표시
+                speech="" → "(침묵 — 몸짓만)" 표시 (기존 오표시 수정)
+                _log_step() → attention_source/context 전달
+  episode_w   : save_step() → attention_source/context .npz에 저장
+                .npz 키 7개 → 9개 (attention_source, attention_context 추가)
+  launch_vla  : 모든 모드에 attention_node 추가
+                attention_only 단독 테스트 모드 추가
+
+  [버그 수정]
+  attention   : VAD race condition 수정 — on_vad_complete()를 _update() 경유
+                없이 직접 처리. off-camera 발화 시 CONVERSING→EMPTY 되돌아가는
+                버그 해결. VAD 감지 시 _face_last_seen 갱신으로 일시 보호.
+  hitl_node   : speech="" 를 "(생성 실패)"로 잘못 표시하던 버그 수정
+  attention   : _make_event()의 dead code face_dur 제거
+
+  [패키지 설치]
+  haru_brain  : setuptools 81.0.0 호환 수동 install 구조 생성 완료
+  haru_attn   : 수동 install 구조 신규 생성 완료
+                (소스 심볼릭 링크 → 소스 수정 즉시 반영)
+
+================================================================
+[ 2026-06-19 Phase 5 이전 버그수정 이력 ]
 ================================================================
 
   hitl_node   : _kb_worker ↔ _run_correction stdin 경쟁 수정
-                (select() 기반 타임아웃 폴링 + _in_correction 플래그)
-                _run_correction을 별도 스레드에서 실행 (타이머 비블로킹)
-                _joints_cb 길이 검증 추가 (IndexError 방지)
   audio_node  : sounddevice 미설치 시 destroy_node 크래시 수정
-                RT 콜백 내 logging을 처리 스레드로 이전
   brain_node  : self._brain=None 초기화 누락 수정
-  tom_prompt  : reset() → 디스크 이력도 초기화 (save_history([]))
+  tom_prompt  : reset() → 디스크 이력도 초기화
   session_mem : 원자적 파일 쓰기 (tmp+rename)
-  adapter_mgr : 정렬 기준 이름→mtime (수동 생성 어댑터 대응)
+  adapter_mgr : 정렬 기준 이름→mtime
   gemma4_inf  : JSON 파서 개선 (thought 채널 대응, 역순 탐색)
-  train_lora  : total_steps=max(1,…) 보호, bytes/str 안전 디코딩
+  train_lora  : total_steps 보호, bytes/str 안전 디코딩
 
 ================================================================

@@ -113,9 +113,13 @@ class HaruHITLNode(Node):
     def _print_vla_output(self, cmd: dict):
         action = cmd.get('action', {})
         expr_id = int(cmd.get('expression_id', 0))
+        source  = cmd.get('attention_source', '-')
+        context = cmd.get('attention_context', '')
         print(f'\n{LINE}')
-        print(f' [에피소드 {self._writer.episode_id} | 스텝 {self._writer.current_step}] VLA 제안')
+        print(f' [에피소드 {self._writer.episode_id} | 스텝 {self._writer.current_step}] VLA 제안 [상황: {source}]')
         print(LINE)
+        if context:
+            print(f'  컨텍스트: {context[:60]}')
         print(f'  표정  : {EXPRESSION_LABELS.get(expr_id, "?")} ({expr_id})')
         print(f'  감정  : {cmd.get("emotion", "-")}')
         print(f'  머리  : tilt={action.get("head_tilt","-")}  '
@@ -123,7 +127,10 @@ class HaruHITLNode(Node):
         print(f'  오른팔: {action.get("r_arm_pitch", "-")}')
         print(f'  바퀴  : right={action.get("right_wheel",0):.0f}  left={action.get("left_wheel",0):.0f}')
         speech = cmd.get('speech', '')
-        print(f'  발화  : {speech[:50] if speech and "Ÿ" not in speech else "(생성 실패)"}')
+        if not speech:
+            print('  발화  : (침묵 — 몸짓만)')
+        else:
+            print(f'  발화  : {speech[:50]}')
         print(LINE)
         print(' [A] 승인   [C] 교정   [S] 스킵   [E] 에피소드 종료')
         print(f'{LINE}')
@@ -139,7 +146,19 @@ class HaruHITLNode(Node):
             pass
 
     def _vla_cb(self, msg: String):
-        if self._state != 'IDLE' or not self._in_episode:
+        if not self._in_episode:
+            return
+        if self._state != 'IDLE':
+            # 검토 중 도착한 brain 출력은 표시할 수 없으므로 드롭
+            try:
+                dropped = json.loads(msg.data)
+                src = dropped.get('attention_source', '?')
+            except Exception:
+                src = '?'
+            self.get_logger().warn(
+                f'[HITL] brain 출력 드롭 (현재 state={self._state}, 트리거 출처={src}) '
+                f'— 검토가 끝난 뒤 다음 이벤트를 기다립니다.'
+            )
             return
         try:
             self._pending = json.loads(msg.data)
@@ -430,6 +449,8 @@ class HaruHITLNode(Node):
             speech_text=final_cmd.get('speech', ''),
             emotion=final_cmd.get('emotion', 'neutral'),
             is_corrected=is_corrected,
+            attention_source=vla_cmd.get('attention_source', ''),
+            attention_context=vla_cmd.get('attention_context', ''),
         )
 
 

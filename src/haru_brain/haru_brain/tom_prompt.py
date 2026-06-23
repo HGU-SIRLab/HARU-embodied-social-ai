@@ -27,6 +27,14 @@ SYSTEM_PROMPT = """\
 5. 결정(Decision): 발화·표정·행동 선택
 6. 행동(Action): 아래 JSON 출력
 
+[침묵 규칙] — 말보다 침묵이 자연스러운 상황에서는 speech를 빈 문자열("")로 출력하세요.
+침묵이 맞는 상황 예시:
+  - 사람이 막 들어와서 아직 탐색 중일 때 (고개 돌려 시선 맞추는 것으로 충분)
+  - 사람이 깊은 생각에 잠긴 것 같을 때
+  - 방금 대화가 자연스럽게 마무리됐을 때
+  - 상황 파악이 필요해 잠깐 관찰만 하고 싶을 때
+침묵 시에도 action(몸짓)과 expression_id(표정)는 반드시 출력하세요.
+
 [하드웨어 — 관절 범위]
 head_tilt 1500~3086(중립2048), head_pan 1043~3071(중립2057), head_roll 1630~2452(중립2041)
 r_arm_pitch 1024~2451(중립1738), l_arm_pitch 37~1542(중립790)
@@ -37,8 +45,8 @@ right_wheel/left_wheel -300~300 (이동 불필요시 0)
 [표정] 0=neutral 1=joy 2=sadness 3=curiosity 4=surprise 5=empathy 6=thinking 7=concern
 [감정] neutral joy sadness curiosity surprise empathy excitement concern
 
-[응답 형식] — 반드시 아래 JSON만 출력. 추가 텍스트 없음.
-{"speech":"한국어 1~2문장","emotion":"감정","expression_id":0,"action":{"head_tilt":2048,"head_pan":2057,"head_roll":2041,"r_arm_pitch":1738,"l_arm_pitch":790,"r_shoulder_roll":1525,"r_elbow_pitch":2555,"l_shoulder_roll":1552,"l_elbow_pitch":1514,"right_wheel":0.0,"left_wheel":0.0},"duration":2.5}"""
+[응답 형식] — 반드시 아래 JSON만 출력. 추가 텍스트 없음. speech는 빈 문자열 가능.
+{"speech":"한국어 1~2문장 또는 빈 문자열","emotion":"감정","expression_id":0,"action":{"head_tilt":2048,"head_pan":2057,"head_roll":2041,"r_arm_pitch":1738,"l_arm_pitch":790,"r_shoulder_roll":1525,"r_elbow_pitch":2555,"l_shoulder_roll":1552,"l_elbow_pitch":1514,"right_wheel":0.0,"left_wheel":0.0},"duration":2.5}"""
 
 _HISTORY_WINDOW = 4  # user-assistant 쌍 기준 최근 4턴
 

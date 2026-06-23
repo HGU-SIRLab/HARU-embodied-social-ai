@@ -1,5 +1,5 @@
 # Project HARU: Embodied Social AI Architecture
-> 최종 업데이트: 2026-06-19 | Phase 5 코드 완성 + 전체 버그수정 완료 (키네스테틱 티칭 + QLoRA + 세션 장기 기억)
+> 최종 업데이트: 2026-06-23 | **Phase 5.5 완료 + 추론 가속 구현 진행 중** — GPU 복구 + TRT-LLM / AutoRound 경로 추가
 
 ---
 
@@ -29,27 +29,27 @@
 |------|------|
 | **메인 컴퓨팅** | NVIDIA Jetson AGX Orin 64GB (ARM64) |
 | **OS / 미들웨어** | Ubuntu 22.04 / ROS2 Humble |
-| **AI 프레임워크** | PyTorch, HuggingFace Transformers, PEFT (LoRA) |
+| **AI 프레임워크** | PyTorch 2.5.0a0+nv24.08 (Jetson 전용), HuggingFace Transformers 5.12.1, PEFT (LoRA) |
 | **모터 제어** | Dynamixel Protocol 2.0, U2D2 (/dev/ttyACM0, 57600 baud) |
 | **카메라** | RealSense SR300 (얼굴/시선, /dev/video0) + Logitech C270 (몸통, /dev/video4) |
-| **마이크** | Logitech C270 USB Audio (PulseAudio, 48kHz → 16kHz 리샘플링, Phase 4.5 구현완료) |
+| **마이크** | Logitech C270 USB Audio (PulseAudio, 48kHz → 16kHz 리샘플링) |
 
 ---
 
 ## 4. HARU 모터 스펙 (Dynamixel)
 
 ### 위치 제어 관절 (Operating Mode 3)
-| 관절명 | ID | 범위 (min~max) | 역할 |
-|--------|----|----------------|------|
-| r_arm_pitch | 3 | 1024 ~ 2451 | 오른팔 피치 |
-| l_arm_pitch | 4 | 37 ~ 1542 | 왼팔 피치 |
-| r_shoulder_roll | 5 | 1000 ~ 2050 | 오른쪽 어깨 롤 |
-| r_elbow_pitch | 6 | 2047 ~ 3062 | 오른쪽 팔꿈치 |
-| l_shoulder_roll | 7 | 1047 ~ 2056 | 왼쪽 어깨 롤 |
-| l_elbow_pitch | 8 | 1021 ~ 2007 | 왼쪽 팔꿈치 |
-| head_pan | 10 | 1043 ~ 3071 | 고개 좌우 (도리도리) |
-| head_tilt | 11 | 1500 ~ 3086 | 고개 앞뒤 (끄덕임) |
-| head_roll | 12 | 1630 ~ 2452 | 고개 기울기 |
+| 관절명 | ID | 범위 (min~max) | 중립값 |
+|--------|----|----------------|--------|
+| r_arm_pitch | 3 | 1024 ~ 2451 | 1738 |
+| l_arm_pitch | 4 | 37 ~ 1542 | 790 |
+| r_shoulder_roll | 5 | 1000 ~ 2050 | 1525 |
+| r_elbow_pitch | 6 | 2047 ~ 3062 | 2555 |
+| l_shoulder_roll | 7 | 1047 ~ 2056 | 1552 |
+| l_elbow_pitch | 8 | 1021 ~ 2007 | 1514 |
+| head_pan | 10 | 1043 ~ 3071 | 2057 |
+| head_tilt | 11 | 1500 ~ 3086 | 2048 |
+| head_roll | 12 | 1630 ~ 2452 | 2041 |
 
 ### 속도 제어 바퀴 (Operating Mode 1)
 | 관절명 | ID | 범위 | 역할 |
@@ -57,160 +57,256 @@
 | right_wheel | 1 | -300 ~ 300 | 오른쪽 바퀴 속도 |
 | left_wheel | 2 | -300 ~ 300 | 왼쪽 바퀴 속도 |
 
-### 표정 ID (디스플레이)
-| ID | 표정 |
-|----|------|
-| 0 | neutral (중립) |
-| 1 | joy (기쁨) |
-| 2 | sadness (슬픔) |
-| 3 | curiosity (궁금함) |
-| 4 | surprise (놀람) |
-| 5 | empathy (공감) |
-| 6 | thinking (생각) |
-| 7 | concern (걱정) |
+### 표정 ID
+| ID | 표정 | ID | 표정 |
+|----|------|----|------|
+| 0 | neutral (중립) | 4 | surprise (놀람) |
+| 1 | joy (기쁨) | 5 | empathy (공감) |
+| 2 | sadness (슬픔) | 6 | thinking (생각) |
+| 3 | curiosity (궁금함) | 7 | concern (걱정) |
 
 ---
 
-## 5. 핵심 아키텍처: 계층적 이중 시스템 (Hierarchical Dual-System)
+## 5. 핵심 아키텍처: 계층적 삼중 시스템 (Hierarchical Triple-System)
 
-> OpenVLA 단일 모델의 한계(언어 능력 붕괴, 15초 지연)를 극복하기 위해
-> 다니엘 카너먼의 System 1 / System 2 인지 이론을 로봇 아키텍처에 적용
+> **Phase 5.5 완료 (2026-06-22)**: Dual-System → Triple-System 진화 완성
 
-### OpenVLA 폐기 이유 (기록)
-- **이산적 행동 토큰화**: LLM의 의미론적 공간을 물리 좌표계로 강제 편향 → 언어 생성 능력 붕괴 (ŸŸŸŸ 현상)
-- **추론 지연 15초**: 자기회귀 방식으로 행동 토큰 생성 → 실시간 HRI 불가
-- **단일 모델 병목**: 대화와 제스처를 동시에 수행하는 멀티태스킹 구조적 불가능
+### 왜 Triple-System인가?
+
+**Dual-System의 한계 (해결됨):**
+- 60초 고정 타이머 = 개발자가 설정한 외부 제약 → 진정한 자율이 아님
+- 빈 방에서도 60초마다 Gemma 4 추론 낭비
+- 사람이 등장해도 최대 60초 후 반응 → Proactive HRI 불가
+
+**Triple-System 해결책:**
+- System 3이 "지각·주의"를 전담 → 항상 켜져 있음, CPU만 사용
+- Gemma 4는 "사회적으로 의미 있는 상황"에서만 깨어남
+- 인식(항상) ≠ 판단(이벤트 시) → 진정한 자율 로봇
 
 ---
 
-### System 2 — 숙고적 추론 및 소셜 상호작용 (High-Level VLM)
+### System 3 — 지각·주의 (haru_attention, 경량, 항상 실행)
 
-**담당**: 언어 이해·생성, ToM 추론, 감정 분석, 행동 계획
+**담당**: 연속 지각, 사회적 상황 분류, Gemma 4 트리거 결정
 
-**선정 모델: Google Gemma 4 12B Unified** (2026.06 출시)
+**구현**: OpenCV Haar Cascade 얼굴 감지 (~5ms/frame, CPU) + 프레임 차분 모션 감지 + VAD 구독
 
-| 특징 | 설명 |
-|------|------|
-| **인코더-프리 아키텍처** | 별도 비전·오디오 인코더 없이 원시 픽셀·오디오를 단일 디코더에 직접 주입 → 엣지 메모리 최적화 |
-| **네이티브 오디오 처리** | 16kHz 원시 파형 → 40ms 단위 640샘플 → 선형 투영 → 3,840차원 임베딩. 감정·억양 정보 보존 |
-| **다중 토큰 예측 (MTP)** | 투기적 디코딩 기반 병렬 토큰 생성 → 대화 지연 대폭 감소 |
-| **Jetson 적합성** | bf16 로드 시 **~22GB** 점유 (bitsandbytes 4-bit 비호환 확인됨), Orin 64GB에서 운용 가능 |
+**상황 상태 머신 (5-State FSM):**
 
-**차선책: Microsoft Phi-4-Multimodal-Instruct** (2025.02, 5.6B)
-- Mixture-of-LoRAs 구조 (비전 LoRA + 오디오 LoRA 분리)
-- WhisperV3 대비 우수한 ASR (WER 6.14%)
-- 메모리 제약이 심할 경우 우선 적용
+```
+[EMPTY] ─얼굴 등장─► [APPEARED] ─5s 침묵─► [PRESENT_SILENT] ─10분─► [LONG_IDLE]
+   ▲                     │   ▲                    │   ▲                    │
+   │                  VAD발화  │                 VAD발화 │                 VAD발화
+   │                     ▼   │                    ▼   │                    ▼
+   └─얼굴소멸──────── [CONVERSING] ◄─────────────────────────────────────────
+                          │
+                       30s 침묵
+                          ▼
+                   [PRESENT_SILENT]
+```
 
-**System 2 출력 형식** (JSON → `haru_vla_raw` 토픽 → action_node 직결 또는 HITL 경유):
+| 상태 | 의미 | brain 트리거 |
+|------|------|-------------|
+| `EMPTY` | 방에 아무도 없음 | ❌ 없음 (낭비 방지) |
+| `APPEARED` | 사람 등장, 5초 대기 중 | ❌ 대기 (먼저 말 걸 기회) |
+| `APPEARED→PRESENT_SILENT` | 5초 지나도 침묵 | ✅ 즉시 트리거 |
+| `CONVERSING` | 대화 중 | ✅ VAD 완료 시 즉시 |
+| `PRESENT_SILENT` | 있는데 안 말함 | ✅ 120s 주기 |
+| `LONG_IDLE` | 10분 이상 침묵 | ✅ 300s 주기 |
+
+**VAD 처리 설계 (Phase 5.5 버그 수정 반영):**
+- `on_vad_complete()`는 `_update()`를 경유하지 않고 직접 이벤트 생성
+- VAD 감지 시 `_face_last_seen = now` 갱신 → 목소리가 들리면 사람이 있다고 간주
+- 이유: 기존에 off-camera 발화 시 CONVERSING 전환 직후 face_present=False로 EMPTY 되돌아가는 버그 수정
+
+**발행 토픽**: `/haru_attention/event` (String JSON)
 ```json
 {
-  "speech": "많이 힘드셨나요?",
-  "emotion": "empathy",
-  "expression_id": 5,
-  "action": {
-    "head_tilt": 2400, "head_pan": 2057, "head_roll": 2041,
-    "r_arm_pitch": 1738, "l_arm_pitch": 790,
-    "r_shoulder_roll": 1525, "r_elbow_pitch": 2555,
-    "l_shoulder_roll": 1552, "l_elbow_pitch": 1514,
-    "right_wheel": 0.0, "left_wheel": 0.0
-  },
-  "duration": 2.5
+  "trigger": true,
+  "state": "APPEARED_TO_SILENT",
+  "context": "사람이 7초 전에 등장했고 아직 말을 걸지 않음. 먼저 인사할지 판단하세요.",
+  "fsm_state": "PRESENT_SILENT",
+  "face_present": true,
+  "face_duration_sec": 7.2,
+  "last_speech_ago_sec": null
 }
 ```
 
+**정책 설계 원칙:**
+- attention_node = "언제 행동할 것인가" (타이밍 정책)
+- Gemma 4 = "어떻게 행동할 것인가" (내용 정책, 사전학습 사회 지식 활용)
+- LoRA 어댑터 = "사용자별 맞춤" (개인화 정책)
+
 ---
 
-### System 1 — 반사적 행동 및 고주파 제어 (Low-Level Policy)
+### System 2 — 숙고적 추론 및 소셜 상호작용 (haru_brain, Gemma 4 12B)
+
+**담당**: 언어 이해·생성, ToM 추론, 감정 분석, 행동 계획
+
+**선정 모델: Google Gemma 4 12B Unified** (bf16 기본 ~22GB, auto_round W4A16 양자화 ~6GB 지원)
+
+**트리거 구조 (Phase 5.5 완료):**
+- `/haru_attention/event` 구독 → 상황 컨텍스트를 user_context로 Gemma 4에 전달
+- 60초 타이머 완전 제거
+- 추론 중 추가 트리거 무시 (`_infer_lock`)
+
+**침묵 선택 허용:**
+- `speech: ""` 빈 문자열 → 발화 없음, 몸짓·표정만 실행
+- tom_prompt.py에 침묵 규칙 명시 (상황별 예시 포함)
+
+**System 2 출력 형식** (`haru_vla_raw` JSON):
+```json
+{
+  "speech":            "많이 힘드셨나요?",
+  "emotion":           "empathy",
+  "expression_id":     5,
+  "action":            {"head_tilt": 2400, "head_pan": 2057, ...},
+  "duration":          2.5,
+  "attention_context": "사용자가 방금 말을 마쳤음. 자연스럽게 응답하세요.",
+  "attention_source":  "CONVERSING"
+}
+```
+> `attention_context`, `attention_source`: Phase 5.5에서 추가. HITL 화면 표시 + 에피소드 데이터 저장에 사용
+
+---
+
+### System 1 — 반사적 행동 및 고주파 제어 (haru_action, 50Hz)
 
 **담당**: System 2의 행동 계획을 받아 50Hz 고주파 모터 제어 실행
 
-**현재 구현**: `haru_action` 노드 (Smoothstep 보간, 50Hz)
-- System 2 명령 수신 → 관절 9개 위치 보간 + 바퀴 2개 속도 제어
-- System 2가 다음 응답을 생성하는 동안에도 독립적으로 부드러운 움직임 유지
+**구현**:
+- Smoothstep 보간 (`ease = p²(3-2p)`) → 자연스러운 가감속
+- 위치 제어 관절 9개 + 속도 제어 바퀴 2개 동시 처리
+- 키네스테틱 모드: `_kinesthetic=True` 시 모터 쓰기 중단, 인코더 읽기만
 
-**향후 고도화** (Phase 5+): ACT 또는 Diffusion Policy 기반 경량 정책 모델로 교체
+**라우팅**:
+- 직결 모드 (`hitl_mode=False`): `/haru_vla_raw` 직접 구독
+- HITL 모드 (`hitl_mode=True`): `/haru_system1_command` 구독 (hitl_node 경유)
 
 ---
 
 ### 고차원 인지 프레임워크
 
-**MindPower (Robot-Centric ToM)**
-- 인식(Perception) → 믿음(Belief) → 욕구(Desire) → 의도(Intention) → 결정(Decision) → 행동(Action)
-- 1인칭 로봇 관점에서 사용자의 잘못된 믿음 수정, 묵시적 목표 유추
+**MindPower (Robot-Centric ToM, 6단계):**
+인식 → 믿음 → 욕구 → 의도 → 결정 → 행동
 
-**Social World Model (SWM)**
-- S3AP 구조화 공식으로 사용자의 숨겨진 의도·정신 상태 변화 명시적 추적
-- 과거 에피소드가 미래 상호작용에 미칠 파급 효과 예측 → 공감 대화 스크립트 생성
+Phase 5.5에서 attention_node가 "인식" 단계를 전담하여 Gemma 4에 정제된 상황 정보 전달.
+
+**Social World Model (SWM):**
+- 세션 간 장기 기억: `data/memory/swm_history.json` (50쌍 보존, 4쌍 추론 윈도우)
+- 행동 패턴 기반 ToM: "사람이 들어와 말 안 거는 행동" → "탐색 중 or 수줍음" 모델링
 
 ---
 
-## 6. ROS2 노드 구조
+## 6. ROS2 노드 구조 (Phase 5.5 Triple-System, 완성)
 
 ```
-[마이크] ──────────────────────────────────────────────────────────┐
-                                                                   ↓
-[RealSense]─┐                                          ┌─ haru_audio ─┐
-[C270]      ├→ haru_vision → /haru_vision/compressed → │              │
-            ┘                                          │  haru_brain  │→ /haru_speech → [TTS]
-                                                       │  (System 2)  │
-                                                       │ Gemma 4 12B  │→ /haru_expression → [디스플레이]
-                                                       └──────────────┘
-                                                              ↓
-                                                   /haru_system1_command
-                                                              ↓
-                                                   haru_action (System 1)
-                                                    50Hz Smoothstep 보간
-                                                              ↓
-                                                    [Dynamixel U2D2]
-                                                    관절 9개 + 바퀴 2개
-
-[HITL 모드] haru_logger ─ 에피소드 수집 → data/episodes/
+[RealSense + C270] → haru_vision → /haru_vision/compressed ─────────────────────┐
+                                                                                  │
+[C270 마이크]      → haru_audio  → /haru_audio/raw ───────────────────────────────┼→ haru_brain
+                               → /haru_audio/vad ─────────────────────┐           │  (System 2)
+                                                                       │           │
+                                        haru_attention (System 3)  ←──┘           │
+                                        · 얼굴 감지 (Haar Cascade)    ←────────────┘
+                                        · 모션 감지 (프레임 차분)
+                                        · 5-State FSM
+                                                │
+                                        /haru_attention/event (JSON)
+                                                │
+                                                ▼
+                                        haru_brain (System 2, Gemma 4 12B)
+                                        · MindPower ToM 6단계
+                                        · SWM 세션 기억
+                                        · speech="" 침묵 선택
+                                                │
+                        ┌───────────────────────┼───────────────────────┐
+                        ▼                       ▼                       ▼
+               /haru_vla_raw           /haru_expression           /haru_speech
+                        │              (Int32 표정 ID)           (String 발화)
+              ┌─────────┴──────────┐        │                       │
+         [직결 모드]          [HITL 모드]   [디스플레이]             [TTS]
+              │                    │         노드 미구현             노드 미구현
+              ▼                    ▼         (Phase 6)              (Phase 6)
+       haru_action          hitl_node
+       (System 1)           · 인간 검토/교정
+       50Hz Smoothstep      · /haru_system1_command
+       [Dynamixel 11축]           │
+                                  ▼
+                            haru_action
+                            (System 1)
 ```
 
-| 토픽 | 타입 | 방향 |
-|------|------|------|
-| `haru_vision/compressed` | CompressedImage | vision → brain |
-| `haru_audio/raw` | Float32MultiArray (16kHz float32 PCM) | audio → brain |
-| `haru_audio/vad` | Bool | audio → (모니터링) |
-| `haru_vla_raw` | String (JSON) | **brain → action (직결)** 또는 brain → hitl_node |
-| `haru_system1_command` | String (JSON) | hitl_node → action **(HITL 모드 전용)** |
-| `haru_expression` | Int32 | brain/hitl → 디스플레이 |
-| `haru_speech` | String | brain → TTS |
-| `haru_joints/state` | Float32MultiArray (9-dim, 10Hz) | action → hitl_node (키네스테틱 티칭) |
-| `haru_joints/torque` | Bool | hitl_node → action (True=ON, False=OFF) |
+### 전체 토픽 테이블
+
+| 토픽 | 타입 | 발행자 | 구독자 |
+|------|------|--------|--------|
+| `haru_vision/compressed` | CompressedImage | haru_vision | attention, brain |
+| `haru_audio/raw` | Float32MultiArray (16kHz) | haru_audio | brain |
+| `haru_audio/vad` | Bool | haru_audio | attention |
+| `haru_attention/event` | String JSON | attention | brain |
+| `haru_vla_raw` | String JSON | brain | action(직결) / hitl_node(HITL) |
+| `haru_system1_command` | String JSON | hitl_node | action(HITL 모드) |
+| `haru_expression` | Int32 | brain, hitl_node, action | [디스플레이 노드 예정] |
+| `haru_speech` | String | brain | [TTS 노드 예정] |
+| `haru_joints/state` | Float32MultiArray 9-dim 10Hz | action | hitl_node |
+| `haru_joints/torque` | Bool | hitl_node | action |
+| `haru_command` | String JSON | (수동 테스트) | action |
 
 ---
 
 ## 7. 에피소드 파인튜닝 전략 (온디바이스 QLoRA)
 
-### 메모리 계획 (Jetson 64GB 통합 메모리)
+### 추론 속도 3단계 경로 (brain_node.py 자동 선택)
+| 경로 | 모델 크기 | 예상 추론 속도 | 조건 |
+|------|-----------|---------------|------|
+| **TRT-LLM W4A16** | ~6GB | ~6-10s | Docker 빌드 완료 + 서버 실행 후 |
+| **auto_round W4A16** | ~6GB | ~10-20s | `quantize_gemma4_autoround.py` 완료 후 |
+| **HF bf16 GPU** | ~22GB | ~15-30s | 즉시 사용 가능 (GPU 복구됨) |
+
+> ✅ **GPU 복구 (2026-06-23)**: torch 2.12.1+cu130 (CUDA 13.0, 시스템 불일치) → torch 2.5.0a0+nv24.08 (CUDA 12.6 호환) 교체. 61.4 GB 통합 메모리 정상 활성화.
+> ⚠️ **bitsandbytes 4-bit 불가**: SM87 CUDA 커널 미지원. auto_round/TRT-LLM 경로로 4-bit 구현.
+
+### 메모리 계획 (Jetson 64GB)
 | 항목 | 점유량 |
 |------|--------|
 | OS + ROS2 + 백그라운드 | ~10GB |
-| Gemma 4 12B **(bf16, 4-bit 비호환)** | **~22GB** |
+| Gemma 4 12B bf16 (기본) | **~22GB** |
+| Gemma 4 12B auto_round W4A16 (양자화 완료 후) | **~6GB** |
+| attention_node (OpenCV, CPU) | ~0.1GB |
 | 파인튜닝 그래디언트 + 옵티마이저 | ~15GB |
-| **가용 여유** | **~17GB** |
+| **가용 여유 (bf16 기준)** | **~17GB** |
 
-> ⚠️ **4-bit 불가 주의**: bitsandbytes 0.49.2 + Gemma 4 Unified 아키텍처 조합에서 `'model' is not an nn.Module` 오류 발생 확인 (2026-06-18). **bf16 22GB가 유일하게 동작하는 구성.** `train_lora.py`도 동일하게 bf16 로드 (`load_in_4bit=False`).
+### 에피소드 데이터 구조 (Phase 5.5 업데이트)
+```
+data/episodes/episode_YYYYMMDD_HHMMSS/
+  metadata.json
+  step_0000.npz  ← 각 스텝
+```
 
-### PEFT + 수동 학습루프 QLoRA 하이퍼파라미터 (scripts/train_lora.py)
-| 파라미터 | 값 | 근거 |
-|----------|-----|------|
-| `load_in_4bit` | **False (bf16 전용)** | bitsandbytes 4-bit + Gemma 4 Unified 비호환 확인 (2026-06-18) |
-| `r` (LoRA Rank) | 16 | 표현력·효율 균형 |
-| `lora_alpha` | 32 | Rank × 2, 학습 안정성 |
-| `batch_size` | 1 | VRAM 피크 억제 |
-| `gradient_accumulation_steps` | 4 | 실질 배치 효과 |
-| `learning_rate` | 2e-4 | 기본값 (진동 시 1e-4로 낮추기) |
-| `target_modules` | q/k/v/o_proj + gate/up/down_proj | Attention + MLP 전체 학습 |
+`.npz` 키:
+| 키 | 설명 |
+|----|------|
+| `image` | (448, 896, 3) uint8 — 카메라 프레임 |
+| `action` | 12-dim float32 [-1,1] 정규화 (최종/교정값) |
+| `action_vla` | 12-dim float32 [-1,1] 정규화 (brain 원본 예측) |
+| `is_corrected` | bool |
+| `speech_text` | bytes |
+| `emotion` | bytes |
+| `attention_source` | bytes — FSM 상태 (CONVERSING / APPEARED_TO_SILENT 등) ★신규 |
+| `attention_context` | bytes — 상황 컨텍스트 문자열 ★신규 |
 
-> **Gemma 4 gradient_checkpointing 주의**: 후반 18개 레이어에서 KV 캐시를 공유하는 구조(`num_kv_shared_layers`)로 인해 기본 `use_reentrant=True` 설정 시 어텐션 붕괴 버그 발생. `train_lora.py`에서 `gradient_checkpointing_kwargs={'use_reentrant': False}`로 우회 적용 완료.
+### QLoRA 하이퍼파라미터 (scripts/train_lora.py)
+| 파라미터 | 값 |
+|----------|-----|
+| `load_in_4bit` | **False (bf16 전용)** |
+| `r` (LoRA Rank) | 16 |
+| `lora_alpha` | 32 |
+| `batch_size` | 1 |
+| `gradient_accumulation_steps` | 4 |
+| `learning_rate` | 2e-4 |
+| `target_modules` | q/k/v/o_proj + gate/up/down_proj |
 
-### S-LoRA 동적 어댑터 서빙 (에피소드 기억)
-- 백본 모델(Gemma 4 12B)은 메모리에 1회만 로드
-- 에피소드 유형별 LoRA 어댑터 (수십 MB 단위) 디스크↔메모리 동적 스왑
-- 맥락 인식형 라우팅: 첫 3초 오디오 텐서 분석 → 사용자/상황 식별 → 해당 어댑터 로드
-- 파국적 망각 원천 차단: 새 에피소드는 새 어댑터에 학습, 기존 지식 보존
+> **Gemma 4 gradient_checkpointing**: `use_reentrant=False` 필수 (KV 공유 구조 버그 우회)
 
 ---
 
@@ -218,82 +314,80 @@
 
 | Phase | 목표 | 상태 |
 |-------|------|------|
-| **Phase 1** | Jetson 환경 구축 + OpenVLA 단독 추론 검증 | ✅ 완료 |
-| **Phase 2** | ROS2 멀티노드 통합 (카메라→VLA→모터) | ✅ 완료 (OpenVLA로) |
+| **Phase 1** | Jetson 환경 구축 + 기본 추론 검증 | ✅ 완료 |
+| **Phase 2** | ROS2 멀티노드 통합 (카메라→VLA→모터) | ✅ 완료 |
 | **Phase 3** | HITL 에피소드 데이터 로깅 파이프라인 | ✅ 완료 |
-| **Phase 4** | **System 2 교체**: Gemma 4 12B Unified 도입 + MindPower ToM + SWM | ✅ **완료** (2026-06-18) |
-| **Phase 4.5** | 오디오 입력 노드 (`haru_audio`) + C270 마이크 + Gemma 4 네이티브 오디오 | ✅ **완료** (2026-06-18) |
-| **Phase 5** | QLoRA 에피소드 파인튜닝 + LoRA 어댑터 서빙 + 세션 간 장기 기억 + 키네스테틱 티칭 | ✅ **코드 완성** (2026-06-19, 실제 에피소드 수집 필요) |
-| **Phase 6** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
+| **Phase 4** | System 2 교체: Gemma 4 12B + MindPower ToM + SWM | ✅ 완료 2026-06-18 |
+| **Phase 4.5** | 오디오 입력 노드 (haru_audio) + VAD | ✅ 완료 2026-06-18 |
+| **Phase 5** | QLoRA 파이프라인 + 세션 장기 기억 + 키네스테틱 티칭 | ✅ 완료 2026-06-19 |
+| **Phase 5.5** | **Triple-System**: haru_attention + 이벤트 드리븐 brain + 버그 수정 | ✅ **완료 2026-06-22** |
+| **Phase 5.6** | GPU 복구 + 추론 가속 (auto_round W4A16 + TRT-LLM 경로 구현) | 🔄 **진행 중 2026-06-23** |
+| **Phase 6** | Piper TTS 노드 + 표정 디스플레이 노드 | ⬜ 다음 단계 |
+| **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---
 
-## 9. AI 엔지니어를 위한 개발 지침
+## 9. 개발 지침 & 주의사항
 
 ### 절대 원칙
-- 헷갈릴 때는 항상 이 파일을 먼저 확인
-- Jetson torch는 반드시 NVIDIA 전용 wheel 사용 (PyPI torch 설치 금지)
-- 중국 모델 사용 금지 (Qwen, DeepSeek, GLM, InternVLA, Cosmos Reason2 포함)
-- System 2와 System 1은 반드시 분리 유지 (단일 엔드투엔드 모델로 합치지 말 것)
+- Jetson torch: 반드시 NVIDIA 전용 wheel (PyPI `pip install torch` 금지)
+- 중국 모델 금지: Qwen, DeepSeek, GLM, InternVLA, Cosmos Reason2 포함
+- System 3 / System 2 / System 1 분리 유지
+- attention_node: CPU만 사용 (GPU는 Gemma 4 전용)
+- Gemma 4: 4-bit 불가, bf16 22GB만
 
-### TensorRT-LLM 적용 불가 판정 (2026-06-18 검토)
-- **판정: 현재 불가** — jetson-containers 이미지 최신 버전(2024-11-13 기준) 기준 Gemma 4 `gemma4_unified` 아키텍처 미지원
-- aarch64 TRT-LLM wheel 없음; `gemma4_unified` 전용 변환 스크립트 없음
-- **대안**: Gemma 3용 TRT-LLM 프로파일 존재하나 Gemma 4 Unified와 구조 불일치 (인코더-프리 MTP 구조)
-- **재검토 시점**: jetson-containers Gemma 4 지원 이미지 출시 후 (미정)
+### setuptools 81.0.0 이슈 (빌드 주의)
+- `colcon build --symlink-install`이 haru_brain / haru_attention에서 실패
+- 해결: 수동 install 구조 (2026-06-22 생성 완료)
+  - `install/{pkg}/lib/python3.10/site-packages/{pkg}` → symlink to src
+  - `install/{pkg}/lib/python3.10/site-packages/{pkg}-{ver}-py3.10.egg-info/` (수동 생성)
+- **소스 수정 시 재빌드 불필요** (symlink이므로 즉시 반영)
+- 다른 패키지(haru_audio 등) 수정 시: `colcon build --symlink-install --packages-select <pkg>`
+
+### TensorRT-LLM 빌드 진행 중 (2026-06-23)
+- TRT-LLM 1.2.1: `Gemma4ForConditionalGeneration` 공식 지원 확인 (jetson-containers)
+- jetson-containers 의존성: ffmpeg:8.1로 업데이트 완료 (git pull 2026-06-23)
+- Docker 빌드: `scripts/build_trtllm_docker.sh` 실행 중 (백그라운드, ~8-16시간)
+- 완료 후: `scripts/convert_gemma4_trtllm.sh` → `scripts/run_trtllm_server.sh` 순서
+- brain_node.py가 포트 8000 서버 자동 감지 → 최속 경로 선택
 
 ### 현재 워크스페이스 구조
 ```
 robot_brain_workspace/
-├── haru_vla_env/          ← Python venv (transformers 5.12, bitsandbytes, torch NV, peft, trl)
+├── haru_vla_env/              ← Python venv (torch 2.5.0a0+nv24.08, transformers 5.12.1 등)
 ├── scripts/
-│   ├── test_gemma4.py     ← Gemma 4 추론 단독 테스트
-│   ├── train_lora.py      ← Phase 5 QLoRA 파인튜닝 (HITL 에피소드 → LoRA 어댑터)
-│   └── convert_to_rlds.py ← RLDS 변환
+│   ├── test_gemma4.py
+│   ├── train_lora.py              ← QLoRA 파인튜닝
+│   ├── convert_to_rlds.py
+│   ├── quantize_gemma4_autoround.py  ← W4A16 양자화 실행 스크립트 ★ 신규
+│   ├── build_trtllm_docker.sh        ← TRT-LLM Docker 빌드 ★ 신규
+│   ├── convert_gemma4_trtllm.sh      ← TRT-LLM 엔진 변환 ★ 신규
+│   └── run_trtllm_server.sh          ← TRT-LLM 서버 실행 ★ 신규
 ├── data/
-│   ├── episodes/          ← HITL 수집 데이터 (step_XXXX.npz)
-│   ├── adapters/          ← 학습된 LoRA 어댑터 (adapter_YYYYMMDD_HHMMSS/)
-│   └── memory/            ← 세션 간 SWM 이력 (swm_history.json)
+│   ├── episodes/              ← HITL 수집 데이터 (attention_source/context 포함)
+│   ├── adapters/              ← 학습된 LoRA 어댑터
+│   ├── memory/                ← SWM 이력 (swm_history.json)
+│   ├── gemma4_autoround_w4a16/ ← auto_round W4A16 양자화 모델 (양자화 완료 후 생성)
+│   ├── trtllm/engine/         ← TRT-LLM 엔진 (빌드 완료 후 생성)
+│   └── trtllm/visual_engine/  ← TRT-LLM 비전 인코더
 ├── src/
-│   ├── haru_vision/       ← 카메라 노드 (듀얼 카메라, 3Hz, SSH 폴백)
-│   ├── haru_brain/        ← System 2 (Gemma 4 12B, MindPower ToM, SWM, LoRA 자동 로드)
-│   │   ├── brain_node.py
-│   │   ├── gemma4_inference.py  ← PEFT 어댑터 자동 로드 포함
-│   │   ├── tom_prompt.py        ← 세션 간 장기 기억 영속화 포함
-│   │   ├── session_memory.py    ← SWM 디스크 저장/복원 (Phase 5 신규)
-│   │   └── adapter_manager.py   ← LoRA 어댑터 관리 (Phase 5 신규)
-│   ├── haru_audio/        ← 오디오 노드 (C270 PulseAudio, VAD, 48→16kHz 리샘플링)
-│   ├── haru_action/       ← System 1 (50Hz Smoothstep, hitl_mode 파라미터)
-│   └── haru_logger/       ← HITL 로거 (12-DoF 저장)
-├── launch_vla.sh          ← 실행 스크립트 (all/audio/hitl/brain/action/vision/audio_only)
-└── HARU_RUN_COMMANDS.txt  ← 명령어 모음
+│   ├── haru_vision/           ← 카메라 노드 (듀얼, 3Hz, 896×448 JPEG)
+│   ├── haru_audio/            ← 마이크 노드 (VAD, 16kHz, C270)
+│   ├── haru_attention/        ← System 3: 주의 노드 ★ Phase 5.5
+│   │   └── attention_node.py  ← 얼굴감지 + 5-State FSM + VAD통합
+│   ├── haru_brain/            ← System 2 (Gemma 4 12B)
+│   │   ├── brain_node.py          ← 3-tier 자동 선택 (TRT-LLM→AutoRound→HF)
+│   │   ├── gemma4_inference.py    ← HF bf16 기본 경로
+│   │   ├── gemma4_trtllm_inference.py   ← TRT-LLM 고속 경로 ★ 신규
+│   │   ├── gemma4_autoround_inference.py ← auto_round 중속 경로 ★ 신규
+│   │   ├── tom_prompt.py          ← 침묵 규칙 + 상황 컨텍스트
+│   │   ├── session_memory.py
+│   │   └── adapter_manager.py
+│   ├── haru_action/           ← System 1 (50Hz Smoothstep)
+│   └── haru_logger/           ← HITL 로거 (attention_source/context 저장)
+├── torch-2.5.0a0+...nv24.08...whl  ← Jetson 전용 torch wheel (사용됨)
+├── launch_vla.sh              ← 실행 스크립트
+├── HARU_PROJECT_CONTEXT.md    ← 이 파일
+├── HARU_RESEARCH_GOALS.txt
+└── HARU_RUN_COMMANDS.txt
 ```
-
-### Phase 5 완성 내용 (2026-06-19, 코드 완성 — 실제 에피소드 수집 필요)
-
-**세션 간 장기 기억 (SWM 영속 레이어)**
-- `session_memory.py`: `data/memory/swm_history.json`에 최대 50쌍 보존
-- 추론 윈도우: 최근 4쌍만 메시지에 포함 (토큰 절약)
-- `tom_prompt.py`: 시작 시 자동 로드, 대화마다 자동 저장 (원자적 tmp+rename 쓰기)
-
-**키네스테틱 티칭 (물리적 교정)**
-- HITL [C] → [D] 선택 시: `haru_joints/torque=False` publish → 사용자가 손으로 조작 → Enter → 인코더 자동 캡처
-- 구현: `MultiThreadedExecutor` + `ReentrantCallbackGroup`으로 `input()` 블록 중에도 `/haru_joints/state` 콜백 실행 가능
-- `_kb_worker`와 `_run_correction` 간 stdin 충돌: `select()` 0.2s 타임아웃 + `_in_correction` 플래그로 해결
-- `POSITION_JOINT_ORDER` 순서가 `action_node.HARU_LIMITS` 순서와 반드시 일치해야 Float32MultiArray 인덱스 매핑 정상 동작
-
-**QLoRA 학습 파이프라인**
-- `scripts/train_lora.py`: `HaruEpisodeDataset` (PyTorch Dataset, 사전 토큰화)
-- 정확한 loss 마스킹: `prompt_len` 기준 `labels[:prompt_len]=-100` (프롬프트 구간 제외)
-- 어댑터 저장: `data/adapters/adapter_YYYYMMDD_HHMMSS/`
-- `brain_node` 재시작 시 `adapter_manager.py`가 mtime 기준 최신 어댑터 자동 선택·로드
-
-### Phase 4 완료 시점 주요 사실 (2026-06-18)
-- **Gemma 4 12B**: bf16으로만 로드 가능 (bitsandbytes 4-bit 비호환), 22GB VRAM 사용
-- **추론 속도**: 약 45~50초 / 응답 (5 tokens/sec, Jetson AGX Orin 한계)
-- **inference_interval 기본값**: 60초
-- **JSON 출력 품질**: emotion ↔ expression_id 매핑 정확, 관절 범위 준수, 한국어 자연어 발화
-- **SWM 연속성**: user-assistant 쌍 4턴 이력 유지
-- **토픽 라우팅**: brain → `haru_vla_raw` → (HITL 또는 직결) → action_node
-- **action_node 파라미터**: `hitl_mode:=true` (HITL), 기본=직결모드
-- **HITL 데이터**: 12-DoF 정규화 저장 (표정+관절9+바퀴2)
