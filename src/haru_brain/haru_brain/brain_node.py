@@ -232,6 +232,8 @@ class HaruBrainNode(Node):
             t0 = time.time()
             speech_published = [False]
 
+            expr_published = [False]
+
             def _early_speech(text: str):
                 """streaming: speech 필드 완성 즉시 TTS 발행 (체감 지연 단축)."""
                 msg = String()
@@ -241,8 +243,17 @@ class HaruBrainNode(Node):
                 if text:
                     self.get_logger().info(f'[Brain] [STREAM] speech 조기 발행: {repr(text[:40])}')
 
+            def _early_expr(eid: int):
+                """streaming: expression_id 완성 즉시 표정 변경."""
+                emsg = Int32()
+                emsg.data = eid
+                self.pub_expr.publish(emsg)
+                expr_published[0] = True
+                self.get_logger().info(f'[Brain] [STREAM] expression 조기 발행: {eid}')
+
             resp = self._brain.infer(frame, user_context=context, audio=audio,
-                                     speech_ready_cb=_early_speech)
+                                     speech_ready_cb=_early_speech,
+                                     expression_ready_cb=_early_expr)
             elapsed = time.time() - t0
             audio_tag = f' +audio({len(audio)/16000:.1f}s)' if audio is not None else ''
             speech_preview = f'"{resp.speech[:40]}"' if resp.speech else '(침묵)'
@@ -251,7 +262,8 @@ class HaruBrainNode(Node):
                 f'emotion={resp.emotion} | speech={speech_preview}'
             )
             self._publish(resp, context=context, source=source,
-                          skip_speech=speech_published[0])
+                          skip_speech=speech_published[0],
+                          skip_expr=expr_published[0])
         except Exception as e:
             self.get_logger().error(f'[Brain] 추론 오류: {e}')
         finally:
@@ -260,7 +272,8 @@ class HaruBrainNode(Node):
 
     # ── 발행 ─────────────────────────────────────────────────────────────────
 
-    def _publish(self, resp, context: str = '', source: str = '', skip_speech: bool = False):
+    def _publish(self, resp, context: str = '', source: str = '',
+                 skip_speech: bool = False, skip_expr: bool = False):
         cmd = resp.to_command_dict()
         if context:
             cmd['attention_context'] = context
@@ -272,9 +285,10 @@ class HaruBrainNode(Node):
         raw_msg.data = json_str
         self.pub_raw.publish(raw_msg)
 
-        expr_msg = Int32()
-        expr_msg.data = resp.expression_id
-        self.pub_expr.publish(expr_msg)
+        if not skip_expr:
+            expr_msg = Int32()
+            expr_msg.data = resp.expression_id
+            self.pub_expr.publish(expr_msg)
 
         if not skip_speech:
             speech_msg = String()

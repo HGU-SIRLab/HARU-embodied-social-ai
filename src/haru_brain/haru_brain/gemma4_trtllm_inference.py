@@ -49,6 +49,14 @@ def _extract_speech_field(text: str) -> str | None:
     return None
 
 
+def _extract_expression_id(text: str) -> int | None:
+    """스트리밍 중 expression_id 필드가 완성됐을 때 추출 (조기 표정 변경용)."""
+    m = re.search(r'"expression_id"\s*:\s*(\d+)', text)
+    if m:
+        return max(0, min(7, int(m.group(1))))
+    return None
+
+
 class Gemma4TRTLLMInference:
     """
     TRT-LLM 서버 기반 Gemma 4 12B 추론.
@@ -121,7 +129,8 @@ class Gemma4TRTLLMInference:
         image: Image.Image,
         user_context: str = '',
         audio: np.ndarray | None = None,
-        speech_ready_cb=None,   # callable(speech_text: str) — streaming 시 조기 발행
+        speech_ready_cb=None,      # callable(str) — speech 필드 완성 시
+        expression_ready_cb=None,  # callable(int) — expression_id 완성 시
     ) -> HaruResponse:
         if self._client is None:
             raise RuntimeError('load()를 먼저 호출하세요.')
@@ -145,6 +154,7 @@ class Gemma4TRTLLMInference:
 
                 raw_text = ''
                 speech_cb_fired = False
+                expr_cb_fired = False
 
                 for chunk in stream:
                     delta = chunk.choices[0].delta.content or ''
@@ -156,6 +166,13 @@ class Gemma4TRTLLMInference:
                         if s is not None:
                             speech_cb_fired = True
                             speech_ready_cb(s)
+
+                    # expression_id 완성 즉시 콜백 (조기 표정 변경)
+                    if not expr_cb_fired and expression_ready_cb is not None:
+                        eid = _extract_expression_id(raw_text)
+                        if eid is not None:
+                            expr_cb_fired = True
+                            expression_ready_cb(eid)
 
                 elapsed = time.time() - t0
                 n_tok = len(raw_text.split())
