@@ -111,6 +111,7 @@ class Gemma4AutoRoundInference:
         image: Image.Image,
         user_context: str = '',
         audio: np.ndarray | None = None,
+        **kwargs,
     ) -> HaruResponse:
         if self._model is None:
             raise RuntimeError('load()를 먼저 호출하세요.')

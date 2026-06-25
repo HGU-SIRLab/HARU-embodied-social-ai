@@ -10,8 +10,8 @@ import numpy as np
 _HAS_DISPLAY = bool(os.environ.get('DISPLAY'))
 _DISPLAY_WORKING = _HAS_DISPLAY  # 첫 imshow 실패 시 False로 변경
 
-IMG_SIZE   = 448   # 각 카메라 정방형 크기
-JPEG_QUAL  = 80
+IMG_SIZE   = 336   # 각 카메라 정방형 크기 (448→336: 비전 토큰 44% 감소, 추론 ~0.6s 단축)
+JPEG_QUAL  = 75
 CAPTURE_HZ = 3.0
 
 
