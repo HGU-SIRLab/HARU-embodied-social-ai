@@ -3,7 +3,7 @@
 exec /opt/venv/bin/vllm serve /model \
     --dtype bfloat16 \
     --max-model-len 2048 \
-    --gpu-memory-utilization 0.75 \
+    --gpu-memory-utilization 0.72 \
     --limit-mm-per-prompt '{"image": 1}' \
     --trust-remote-code \
     --port 8000 \
