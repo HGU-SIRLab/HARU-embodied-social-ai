@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# HARU Social AI 실행 스크립트 (Triple-System: System 3 attention + System 2 brain + System 1 action)
+# HARU Social AI 실행 스크립트 (Triple-System + TTS)
 #
 # 사용법:
-#   ./launch_vla.sh              # 전체 파이프라인 (Triple-System)
+#   ./launch_vla.sh              # 전체 파이프라인 (Triple-System + TTS)
 #   ./launch_vla.sh hitl         # 전체 파이프라인 + HITL 로거 (데이터 수집)
 #   ./launch_vla.sh attention_only  # attention_node 단독 테스트
 #   ./launch_vla.sh brain        # brain_node 만 (Gemma 4 12B)
 #   ./launch_vla.sh action       # action_node 만
 #   ./launch_vla.sh vision       # vision_node 만
 #   ./launch_vla.sh audio_only   # audio_node 만
+#   ./launch_vla.sh tts          # tts_node 만 (음성 출력 테스트)
 
 set -e
 
@@ -48,6 +49,13 @@ case "$MODE" in
     ros2 run haru_audio audio_node
     ;;
 
+  tts)
+    echo "[LAUNCH] haru_tts_node (edge-tts 한국어 음성 출력)"
+    echo "[TEST]  ros2 topic pub --once /haru_speech std_msgs/msg/String \"{data: '테스트입니다'}\""
+    source "${VENV}/bin/activate"
+    HARU_AUDIO_OUT="${HARU_AUDIO_OUT:-hw:3,0}" ros2 run haru_tts tts_node
+    ;;
+
   attention_only)
     echo "[LAUNCH] haru_attention_node 단독 테스트"
     echo "[INFO] 모니터링: ros2 topic echo /haru_attention/event"
@@ -64,7 +72,9 @@ case "$MODE" in
     ;;
 
   hitl)
-    echo "[LAUNCH] HITL 데이터 수집 모드 (Triple-System + hitl_logger)"
+    echo "[LAUNCH] HITL 데이터 수집 모드 (Triple-System + TTS + hitl_logger)"
+
+    source "${VENV}/bin/activate"
 
     ros2 run haru_vision vision_node &
     PID_VISION=$!
@@ -78,11 +88,13 @@ case "$MODE" in
     ros2 run haru_action action_node --ros-args -p hitl_mode:=true &
     PID_ACTION=$!
 
-    source "${VENV}/bin/activate"
     ros2 run haru_brain brain_node &
     PID_BRAIN=$!
 
-    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} 2>/dev/null; echo '[STOP] 종료'" SIGINT SIGTERM
+    HARU_AUDIO_OUT="${HARU_AUDIO_OUT:-hw:3,0}" ros2 run haru_tts tts_node &
+    PID_TTS=$!
+
+    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} ${PID_TTS} 2>/dev/null; echo '[STOP] 종료'" SIGINT SIGTERM
 
     # hitl_node: 포그라운드 실행 (터미널 입력 필요)
     ros2 run haru_logger hitl_node
@@ -90,7 +102,10 @@ case "$MODE" in
     ;;
 
   all)
-    echo "[LAUNCH] Triple-System 전체: vision + attention + audio + brain + action"
+    echo "[LAUNCH] 전체: vision + attention + audio + brain + action + TTS"
+
+    # 모든 노드가 venv(edge-tts, sounddevice 등) 접근 가능하도록 먼저 활성화
+    source "${VENV}/bin/activate"
 
     ros2 run haru_vision vision_node &
     PID_VISION=$!
@@ -104,20 +119,22 @@ case "$MODE" in
     ros2 run haru_action action_node &
     PID_ACTION=$!
 
-    source "${VENV}/bin/activate"
     ros2 run haru_brain brain_node &
     PID_BRAIN=$!
 
-    echo "[INFO] PIDs — vision:${PID_VISION}  attention:${PID_ATTENTION}  audio:${PID_AUDIO}  action:${PID_ACTION}  brain:${PID_BRAIN}"
+    HARU_AUDIO_OUT="${HARU_AUDIO_OUT:-hw:3,0}" ros2 run haru_tts tts_node &
+    PID_TTS=$!
+
+    echo "[INFO] PIDs — vision:${PID_VISION}  attention:${PID_ATTENTION}  audio:${PID_AUDIO}  action:${PID_ACTION}  brain:${PID_BRAIN}  tts:${PID_TTS}"
     echo "[INFO] 상황 모니터링: ros2 topic echo /haru_attention/event"
     echo "[INFO] Ctrl+C 로 전체 종료"
 
-    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} 2>/dev/null; echo '[STOP] 전체 노드 종료'" SIGINT SIGTERM
+    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} ${PID_TTS} 2>/dev/null; echo '[STOP] 전체 노드 종료'" SIGINT SIGTERM
     wait
     ;;
 
   *)
-    echo "사용법: $0 [all|hitl|attention_only|brain|action|vision|audio_only]"
+    echo "사용법: $0 [all|hitl|attention_only|brain|action|vision|audio_only|tts]"
     exit 1
     ;;
 esac
