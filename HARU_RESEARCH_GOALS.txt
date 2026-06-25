@@ -281,7 +281,13 @@ Phase 6.4+ (데이터 수집·LoRA)           ██████████  98
      - 동적 max_tokens 재시도: 350→250→150 (컨텍스트 초과 400 오류 자동 대응)
      - vision_node IMG_SIZE: 448→336 (비전 토큰 44% 감소, ~0.6s 단축)
      - 전체 fallback infer()에 **kwargs 추가 (TypeError 방지)
-  결과: speech 발행 지연 평균 1.60s (목표 5s 3배 초과, 28× 향상)
+     - expression_id streaming 조기 발행 (_extract_expression_id)
+     - skip_expr 파라미터로 중복 방지
+  결과:
+    - speech 발행: 2.24s (streaming 조기 발행)
+    - expression 발행: 2.90s (streaming 조기 발행, 기존 7.21s → 59% 단축)
+    - vla_raw (action): 6.53s (full JSON 완성 후)
+    - 목표 5s 3배 초과, HF 45s → 2.24s (20× 향상)
 
 [단기 — 데이터 수집 (로봇 앞에서)]
   7. haru-hitl 로 에피소드 20~30 스텝 수집
