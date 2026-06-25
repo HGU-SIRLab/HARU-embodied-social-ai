@@ -4,10 +4,11 @@
   <img src="https://img.shields.io/badge/ROS2-Humble-blue" />
   <img src="https://img.shields.io/badge/Jetson-AGX_Orin_64GB-green" />
   <img src="https://img.shields.io/badge/Model-Gemma_4_12B-orange" />
-  <img src="https://img.shields.io/badge/Phase-5_(QLoRA_+_HITL)-purple" />
+  <img src="https://img.shields.io/badge/Phase-5.7_(완료)-purple" />
+  <img src="https://img.shields.io/badge/Inference-vLLM_Container_Server-red" />
 </p>
 
-**Author:** Cho Hyeongmin | Handong Global University, SIRLab  
+**Author:** Cho Hyeongmin (조형민) | Handong Global University, SIRLab  
 **Research:** M.S. Thesis — Embodied Social AI for Proactive HRI
 
 ---
@@ -30,26 +31,39 @@ The system is built on five core principles:
 
 ---
 
-## Architecture — Hierarchical Dual-System
+## Architecture — Hierarchical Triple-System
 
-Inspired by Kahneman's System 1 / System 2 cognitive theory:
+Inspired by Kahneman's System 1 / System 2 cognitive theory, extended with a perceptual attention layer (System 3):
 
 ```
 [RealSense SR300]──┐
                    ├──▶  haru_vision  ──▶  /haru_vision/compressed
 [Logitech C270] ───┘         3Hz, 896×448 JPEG
+                                  │
+                    ┌─────────────▼────────────────┐
+                    │    haru_attention (System 3)  │  ← 항상 켜짐 (CPU)
+                    │  OpenCV Haar + 5-State FSM    │
+                    │  EMPTY/APPEARED/CONVERSING    │
+                    │  PRESENT_SILENT/LONG_IDLE     │
+                    └──────────────┬───────────────┘
+                                   │ /haru_attention/event (JSON)
 
 [C270 Microphone] ──▶  haru_audio  ──▶  /haru_audio/raw
                          VAD, 16kHz              (Float32MultiArray)
-
-                    ┌────────────────────────────────────────┐
-                    │         haru_brain  (System 2)         │
-                    │   Gemma 4 12B Unified  (~45-50s/turn)  │
-                    │   MindPower 6-stage ToM                │
-                    │   Social World Model (SWM)             │
-                    │   Session Memory (50 pairs, disk)      │
-                    │   PEFT LoRA adapter auto-load          │
-                    └────────────┬───────────────────────────┘
+                                   │ /haru_audio/vad (Bool)
+                    ┌──────────────▼─────────────────────────────────┐
+                    │          haru_brain  (System 2)                │
+                    │  Gemma 4 12B Unified                           │
+                    │  ┌────────────────────────────────────────┐    │
+                    │  │  3-Tier 추론 경로 자동 선택             │    │
+                    │  │  1. TRT-LLM W4A16  (~6-10s/turn) ★    │    │
+                    │  │  2. AutoRound W4A16 (~10-20s/turn) ✅  │    │
+                    │  │  3. HF bf16 GPU    (~15-30s/turn)      │    │
+                    │  └────────────────────────────────────────┘    │
+                    │  MindPower 6-stage ToM                         │
+                    │  Social World Model (SWM, 50 pairs on disk)    │
+                    │  PEFT LoRA adapter auto-load                   │
+                    └────────────┬───────────────────────────────────┘
                                  │ /haru_vla_raw (JSON)
                       ┌──────────▼──────────┐
                       │  [HITL mode]        │
@@ -68,22 +82,98 @@ Inspired by Kahneman's System 1 / System 2 cognitive theory:
                     ID 3~12 (Protocol 2.0, 57600 baud)
 ```
 
-### Why Dual-System?
+### Why Triple-System?
 
 OpenVLA-style single end-to-end models were evaluated first but rejected due to:
-- **Language collapse** — discrete action tokenization corrupts the language generation space (ŸŸŸŸ phenomenon)
-- **15-second latency** — autoregressive action token generation is incompatible with real-time HRI
+- **Language collapse** — discrete action tokenization corrupts the language generation space
+- **15-second latency** — incompatible with real-time HRI
 - **Structural bottleneck** — simultaneous conversation + gesture generation is architecturally impossible
 
-The Dual-System separates *deliberative reasoning* (System 2, slow but deep) from *reactive execution* (System 1, fast and smooth), achieving both linguistic quality and physical responsiveness.
+The Triple-System separates *perceptual attention* (System 3, always-on CPU), *deliberative reasoning* (System 2, event-driven GPU), and *reactive execution* (System 1, 50Hz), achieving both linguistic quality and physical responsiveness on an edge device.
+
+---
+
+## Phase 5.7 — vLLM Container-Based Gemma4 VLM Server + brain_node Integration ✅ (2026-06-25)
+
+### Current Inference Architecture
+
+| Tier | Method | Size | Latency | Status |
+|------|--------|------|---------|--------|
+| **1 (Active)** | **vLLM container server (port 8000)** | **~7.4 GB** | **2.8 tok/s ≈ 64s (target: 20+ tok/s ≈ 5s)** | **✅ Running** |
+| 2 | auto_round W4A16 direct load | ~7.4 GB | ~10–20s | ✅ 완료 (2026-06-23) |
+| 3 | HF Transformers bf16 | ~22 GB | ~15–30s | ✅ 항상 사용 가능 |
+
+`brain_node.py`는 시작 시 port 8000을 먼저 감지하여 vLLM 컨테이너 서버를 자동 선택합니다.
+
+### Starting the Inference Server
+
+```bash
+# Start vLLM container server (background)
+bash scripts/run_vllm_server.sh
+
+# Verify
+curl http://localhost:8000/v1/models
+```
+
+### Vision Support
+
+Gemma 4 is a VLM — vision was mandatory from the start. `gemma4_server.py` handles images via:
+- **`AutoProcessor`** (replacing `AutoTokenizer`) — processes image+text jointly
+- **`image_url` base64 decoding** → PIL Image → `processor(text=..., images=images)`
+- Full OpenAI Vision API format: `{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}`
+
+### Integration Test Results (8/8 ✅, 2026-06-25)
+
+| Checkpoint | Result |
+|-----------|--------|
+| vLLM container port 8000 response | ✅ |
+| `Gemma4TRTLLMInference.try_connect()` | ✅ True, model="gemma4" |
+| brain_node auto TRT-LLM mode | ✅ |
+| `/haru_vision/compressed` receipt | ✅ |
+| `/haru_attention/event` trigger processing | ✅ |
+| Vision + text joint inference | ✅ |
+| `/haru_speech` publish | ✅ "어머, 안녕하세요! 당신이 나타나니 정말 기뻐요." |
+| `/haru_expression` + `/haru_vla_raw` publish | ✅ expr=1 (joy), head=(2300,2057,2041) |
+
+### Speed Bottleneck & Phase 5.8 Plan
+
+**Current**: 2.8 tok/s ≈ 64.8s/response — all available backends (tritonv2_zp, torch_zp) perform software dequantize + separate GEMM with no speedup over bf16 baseline on SM87.
+
+**Blocked paths**:
+- vLLM official Marlin kernel: shape mismatch (`a.size(1)=4096, size_k=8192`) — Gemma 4 heterogeneous attention incompatible
+- gptqmodel 2.2.0: transformers 5.12.1 API mismatch (`AutoModelForVision2Seq` removed) → uninstalled
+- auto-gptq: Jetson PyPI metadata version mismatch → pip rejects
+- torch.compile: IndexError in Triton kernel tracing → removed
+
+**Phase 5.8 target**: 20+ tok/s ≈ 5s — requires fused dequantize+GEMM kernel path (SM87-compatible)
+
+### auto_round W4A16 Key Technical Notes
+
+Gemma 4 Unified has **heterogeneous attention**:
+- `sliding_attention` layers (every 5): `head_dim=256`, local RoPE
+- `full_attention` layers (every 6th): `global_head_dim=512`, global RoPE
+
+**Fix 1 — RoPE dimension mismatch:** `apply_rotary_pos_emb` monkey-patch with `rot_dim = min(x.shape[-1], cos.shape[-1])`.
+
+**Fix 2 — Jetson PyTorch 2.5 `set_submodule` bug (2026-06-23):**
+`set_submodule` uses `type(mod) is not torch.nn.Module` (exact check), causing AttributeError on all nn.Module subclasses → auto_round `set_module()` silently ignores it → QuantLinear never installed → original weights destroyed.
+
+**Fix:** `_patched_set_module` (direct `getattr`/`setattr`) in `quantize_gemma4_autoround.py`. Verified: 328 qweight, 1333 keys, 2 shards.
 
 ---
 
 ## Key Features
 
-### System 2 — Gemma 4 12B Unified
-- **Native multimodal input**: raw pixels + 16kHz audio in a single encoder-free decoder
+### System 3 — haru_attention (항상 켜짐, CPU)
+- **5-State FSM**: EMPTY → APPEARED → CONVERSING ↔ PRESENT_SILENT → LONG_IDLE
+- **OpenCV Haar Cascade** 얼굴 감지 (~5ms/frame), 프레임 차분 모션 감지
+- **이벤트 드리븐 트리거**: Gemma 4를 '사회적으로 의미 있는 상황'에서만 깨움
+- **VAD 통합**: off-camera 발화 시 CONVERSING 전환 (race condition 수정됨)
+
+### System 2 — haru_brain (Gemma 4 12B VLM)
+- **Native multimodal**: raw pixels + 16kHz audio in a single pass
 - **MindPower ToM**: 6-stage reasoning — Perception → Belief → Desire → Intention → Decision → Action
+- **Silence selection**: `speech: ""` → gesture-only response without speech
 - **Session memory**: conversation history persisted across sessions (`data/memory/swm_history.json`)
 - **Episodic LoRA**: PEFT adapter auto-loaded at startup from `data/adapters/`
 
@@ -91,21 +181,14 @@ The Dual-System separates *deliberative reasoning* (System 2, slow but deep) fro
 - **50Hz control loop** with Smoothstep (`3t² − 2t³`) interpolation
 - **9 position-controlled joints** + **2 velocity-controlled wheels**
 - **Kinesthetic mode**: hardware torque ON/OFF for direct physical teaching
-- Publishes joint states at 10Hz (`/haru_joints/state`) for HITL capture
 
 ### HITL Pipeline
 - **[A] Accept** — robot executes VLA proposal as-is, saved as positive example
-- **[C] Correct** — two correction modes:
-  - **[D] Direct (Kinesthetic Teaching)** — torque OFF → physically move robot → Enter → encoder auto-captured
-  - **[M] Manual** — type joint values directly (Enter = keep current)
-- **[S] Skip** — robot executes but data not logged
-- **[E] End** — save episode with metadata
-
-### QLoRA Training (`scripts/train_lora.py`)
-- `HaruEpisodeDataset` — PyTorch Dataset with pre-tokenized samples and accurate loss masking
-- Prompt tokens masked with `labels[:prompt_len] = -100`
-- `gradient_checkpointing` with `use_reentrant=False` (Gemma 4 KV-sharing bug workaround)
-- Saves to `data/adapters/adapter_YYYYMMDD_HHMMSS/`; auto-loaded on next brain_node start
+- **[C] Correct** — two modes:
+  - **[D] Direct (Kinesthetic Teaching)** — torque OFF → physically move → Enter → encoder captured
+  - **[M] Manual** — type joint values directly
+- **[S] Skip** — execute but don't log
+- **[E] End** — save episode with metadata including FSM state + context
 
 ---
 
@@ -122,19 +205,19 @@ The Dual-System separates *deliberative reasoning* (System 2, slow but deep) fro
 
 ### Joint Map
 
-| Joint | ID | Range | Role |
-|-------|----|-------|------|
-| r_arm_pitch | 3 | 1024–2451 | Right arm pitch |
-| l_arm_pitch | 4 | 37–1542 | Left arm pitch |
-| r_shoulder_roll | 5 | 1000–2050 | Right shoulder roll |
-| r_elbow_pitch | 6 | 2047–3062 | Right elbow |
-| l_shoulder_roll | 7 | 1047–2056 | Left shoulder roll |
-| l_elbow_pitch | 8 | 1021–2007 | Left elbow |
-| head_pan | 10 | 1043–3071 | Head yaw (left/right) |
-| head_tilt | 11 | 1500–3086 | Head pitch (nod) |
-| head_roll | 12 | 1630–2452 | Head roll (tilt) |
-| right_wheel | 1 | −300–300 | Right drive wheel |
-| left_wheel | 2 | −300–300 | Left drive wheel |
+| Joint | ID | Range | Neutral |
+|-------|----|-------|---------|
+| r_arm_pitch | 3 | 1024–2451 | 1738 |
+| l_arm_pitch | 4 | 37–1542 | 790 |
+| r_shoulder_roll | 5 | 1000–2050 | 1525 |
+| r_elbow_pitch | 6 | 2047–3062 | 2555 |
+| l_shoulder_roll | 7 | 1047–2056 | 1552 |
+| l_elbow_pitch | 8 | 1021–2007 | 1514 |
+| head_pan | 10 | 1043–3071 | 2057 |
+| head_tilt | 11 | 1500–3086 | 2048 |
+| head_roll | 12 | 1630–2452 | 2041 |
+| right_wheel | 1 | −300–300 | 0 |
+| left_wheel | 2 | −300–300 | 0 |
 
 ### Expression IDs
 
@@ -151,21 +234,24 @@ The Dual-System separates *deliberative reasoning* (System 2, slow but deep) fro
 
 | Software | Version | Notes |
 |----------|---------|-------|
-| JetPack SDK | 6.2.2 | Ubuntu 22.04, CUDA 12.6 |
+| JetPack SDK | 6.2.2 | Ubuntu 22.04, CUDA 12.6, L4T 36.5.0 |
 | ROS2 | Humble | `apt install ros-humble-desktop` |
 | Python | 3.10 | Included with JetPack |
-| PyTorch | 2.5.0 (Jetson wheel) | **Do NOT use `pip install torch`** |
-| transformers | ≥ 5.12.0 | Gemma 4 `Gemma4UnifiedForConditionalGeneration` |
+| PyTorch | **2.5.0a0+nv24.08** (Jetson wheel) | **절대 `pip install torch` 금지** |
+| transformers | ≥ 5.12.1 | `Gemma4UnifiedForConditionalGeneration` |
+| auto_round | 0.13.1 | W4A16 weight quantization |
 | peft | ≥ 0.19.1 | LoRA adapter loading |
-| trl | ≥ 1.6.0 | QLoRA training utilities |
+| trl | ≥ 1.6.0 | QLoRA training |
 | sounddevice | ≥ 0.5.5 | Microphone capture |
 | scipy | ≥ 1.15.3 | Audio resampling |
 | dynamixel-sdk | — | Motor control |
-| opencv-python | — | Camera capture |
+| opencv-python | — | Camera capture + face detection |
 
-> ⚠️ **Jetson PyTorch**: Always use the NVIDIA-provided wheel. Standard PyPI builds have no CUDA support on aarch64.
+> ⚠️ **Jetson PyTorch**: Always use the NVIDIA-provided wheel (`torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl`). Standard PyPI builds target CUDA 13.0+ and will not activate the GPU on Jetson (CUDA 12.6).
 
-> ⚠️ **bitsandbytes 4-bit**: Incompatible with Gemma 4 Unified architecture (confirmed on bitsandbytes 0.49.2). The system loads in **bf16 (~22GB)**. Do not pass `load_in_4bit=True`.
+> ⚠️ **bitsandbytes 4-bit**: Incompatible with SM87 (Jetson AGX Orin). Use auto_round W4A16 or TRT-LLM for 4-bit quantization instead.
+
+> ℹ️ **setuptools 81.0.0**: Breaks `colcon --symlink-install` editable installs. `haru_brain` and `haru_attention` use a manual install structure (symlinks). Source changes take effect immediately without rebuild.
 
 ---
 
@@ -187,10 +273,10 @@ python3 -m venv haru_vla_env
 source haru_vla_env/bin/activate
 ```
 
-### 3. PyTorch (Jetson wheel)
+### 3. PyTorch (Jetson wheel — MANDATORY)
 
 ```bash
-# Use the Jetson-specific wheel — DO NOT use pip install torch
+# DO NOT use pip install torch
 pip install torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl
 ```
 
@@ -198,7 +284,7 @@ pip install torch-2.5.0a0+872d972e41.nv24.08-cp310-cp310-linux_aarch64.whl
 
 ```bash
 pip install transformers>=5.12.0 peft>=0.19.1 trl>=1.6.0 \
-    accelerate safetensors huggingface-hub \
+    accelerate safetensors huggingface-hub auto-round==0.13.1 \
     sounddevice scipy opencv-python Pillow numpy \
     dynamixel-sdk
 ```
@@ -207,13 +293,16 @@ pip install transformers>=5.12.0 peft>=0.19.1 trl>=1.6.0 \
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+# Standard packages
+colcon build --symlink-install \
+    --packages-select haru_audio haru_vision haru_action haru_logger
 source install/setup.bash
+# haru_brain / haru_attention use manual install (symlinks already set up)
 ```
 
-### 6. Model Download
+### 6. Model — First Run
 
-On first run, `haru_brain` downloads `google/gemma-4-12B-it` (~23GB) from HuggingFace automatically. To pre-download:
+On first run, `haru_brain` loads from HuggingFace cache (pre-downloaded ~23GB). To pre-download:
 
 ```bash
 source haru_vla_env/bin/activate
@@ -225,24 +314,59 @@ Gemma4UnifiedForConditionalGeneration.from_pretrained(
 "
 ```
 
+### 7. Start Inference Server (vLLM Container)
+
+```bash
+# Start Gemma4 vision server on port 8000
+bash scripts/run_vllm_server.sh
+
+# Verify
+curl http://localhost:8000/v1/models
+
+# Stop
+docker stop haru_vllm_server
+```
+
+brain_node automatically connects when port 8000 is available (log: `"✅ TRT-LLM 서버 연결 성공"`).
+
+### 8. W4A16 Quantization (run once, already done)
+
+```bash
+source haru_vla_env/bin/activate
+nohup python3 scripts/quantize_gemma4_autoround.py 2>&1 | tee /tmp/quantize.log &
+
+# Monitor progress
+tail -f /tmp/quantize.log
+
+# Verify completion
+ls data/gemma4_autoround_w4a16/   # config.json + *.safetensors
+```
+
+After completion, `haru-brain` automatically selects the W4A16 path on next start.
+
 ---
 
 ## Running HARU
 
 ```bash
 # Required in every terminal
-source ~/.bashrc   # loads ROS2 + aliases
+source ~/.bashrc
 ```
 
-### Normal Operation (no data collection)
+### Step 1: Start Inference Server
+
+```bash
+# Start Gemma4 VLM server on port 8000 (run once, stays up)
+bash scripts/run_vllm_server.sh
+# Check: curl http://localhost:8000/v1/models
+```
+
+### Step 2: Normal Operation (Triple-System)
 
 ```bash
 haru-ws && haru-all
-# or individually:
-haru-vision   # camera node
-haru-brain    # Gemma 4 inference (~24s to load)
-haru-action   # motor control
-haru-audio    # microphone VAD
+# Starts: vision + attention + brain + audio + action
+# brain_node auto-detects port 8000 → TRT-LLM mode (W4A16 VLM server)
 ```
 
 ### HITL Data Collection Mode
@@ -254,21 +378,20 @@ haru-ws && haru-hitl
 Terminal controls:
 - **[N]** Start new episode
 - **[A]** Accept VLA proposal → log + execute
-- **[C]** Correct → choose **[D]** kinesthetic or **[M]** manual
-- **[S]** Skip this step (execute but don't log)
+- **[C]** Correct → **[D]** kinesthetic or **[M]** manual
+- **[S]** Skip (execute but don't log)
 - **[E]** End & save episode
-- **[Q]** Cancel episode (delete data)
+- **[Q]** Cancel episode
 
 ### QLoRA Training (after collecting episodes)
 
 ```bash
 source haru_vla_env/bin/activate
-cd ~/robot_brain_workspace
 
-# Check data first (no model load)
+# Check data (no model load)
 python scripts/train_lora.py --dry-run
 
-# Train (default: rank=16, epochs=3, lr=2e-4)
+# Train (rank=16, epochs=3, lr=2e-4)
 python scripts/train_lora.py
 
 # Custom
@@ -277,55 +400,80 @@ python scripts/train_lora.py --epochs 5 --rank 32 --lr 1e-4
 
 Adapter is saved to `data/adapters/adapter_YYYYMMDD_HHMMSS/` and **auto-loaded** on the next `haru-brain` start.
 
+### Test Quantized Model
+
+```bash
+source haru_vla_env/bin/activate
+python scripts/test_autoround.py
+# → 20+ checks: load, timing, JSON structure, edge cases, brain_node integration
+```
+
 ---
 
 ## Repository Structure
 
 ```
-HARU-embodied-social-ai/
+robot_brain_workspace/
 ├── src/
-│   ├── haru_vision/          # Camera node (dual-cam, 3Hz)
+│   ├── haru_vision/              # Camera node (dual-cam, 3Hz, 896×448 JPEG)
 │   │   └── haru_vision/vision_node.py
-│   ├── haru_brain/           # System 2 — Gemma 4 12B
+│   ├── haru_attention/           # System 3 — perceptual attention (CPU-only)
+│   │   └── haru_attention/attention_node.py  # 5-State FSM + face/motion/VAD
+│   ├── haru_brain/               # System 2 — Gemma 4 12B
 │   │   └── haru_brain/
-│   │       ├── brain_node.py
-│   │       ├── gemma4_inference.py   # Inference + LoRA auto-load
-│   │       ├── tom_prompt.py         # MindPower ToM + SWM builder
-│   │       ├── session_memory.py     # Cross-session persistence
-│   │       └── adapter_manager.py    # LoRA adapter selector
-│   ├── haru_audio/           # Microphone node (VAD, 16kHz)
+│   │       ├── brain_node.py                  # 3-tier auto-select + attention event sub
+│   │       ├── gemma4_inference.py            # HF bf16 baseline path
+│   │       ├── gemma4_autoround_inference.py  # auto_round W4A16 path ★
+│   │       ├── gemma4_trtllm_inference.py     # TRT-LLM high-speed path ★
+│   │       ├── tom_prompt.py                  # MindPower ToM + SWM + silence rules
+│   │       ├── session_memory.py              # Cross-session disk persistence
+│   │       └── adapter_manager.py             # LoRA adapter selector (mtime)
+│   ├── haru_audio/               # Microphone node (VAD, 16kHz, C270)
 │   │   └── haru_audio/audio_node.py
-│   ├── haru_action/          # System 1 — 50Hz motor control
+│   ├── haru_action/              # System 1 — 50Hz motor control
 │   │   └── haru_action/action_node.py
-│   └── haru_logger/          # HITL episode logger
+│   └── haru_logger/              # HITL episode logger
 │       └── haru_logger/
-│           ├── hitl_node.py          # Interactive correction UI
-│           └── episode_writer.py     # 12-DoF normalized NPZ writer
+│           ├── hitl_node.py          # Interactive correction UI (FSM state display)
+│           └── episode_writer.py     # 12-DoF NPZ + attention context writer
 ├── scripts/
-│   └── train_lora.py         # QLoRA fine-tuning pipeline
-├── data/                     # ← git-ignored (episodes, adapters, memory)
-│   ├── episodes/             # HITL collected steps (step_XXXX.npz)
-│   ├── adapters/             # Trained LoRA adapters
-│   └── memory/               # Session SWM history
-├── launch_vla.sh             # Launch script
-├── HARU_PROJECT_CONTEXT.md   # Full architecture reference
-├── HARU_RUN_COMMANDS.txt     # All commands & usage guide (Korean)
-└── HARU_RESEARCH_GOALS.txt   # M.S. thesis research goals & gap analysis
+│   ├── quantize_gemma4_autoround.py  # W4A16 quantization (RoPE patch included) ★
+│   ├── test_autoround.py             # Full quantized model test suite ★
+│   ├── test_gemma4.py                # bf16 baseline test
+│   ├── train_lora.py                 # QLoRA fine-tuning pipeline
+│   ├── gemma4_server.py              # ★ vLLM container FastAPI server (vision support)
+│   ├── run_vllm_server.sh            # ★ Start haru_vllm_server container
+│   ├── build_trtllm_docker.sh        # TRT-LLM Docker build (8-16h, one-time)
+│   ├── convert_gemma4_trtllm.sh      # TRT-LLM engine conversion
+│   ├── run_trtllm_server.sh          # TRT-LLM OpenAI-compatible server
+│   └── convert_to_rlds.py            # Episode → RLDS format
+├── data/                             # ← git-ignored
+│   ├── episodes/                     # HITL collected steps (step_XXXX.npz, 9 keys)
+│   ├── adapters/                     # Trained LoRA adapters (auto-loaded)
+│   ├── memory/                       # SWM session history (swm_history.json)
+│   ├── gemma4_autoround_w4a16/       # W4A16 quantized model (after quantization)
+│   └── trtllm/                       # TRT-LLM engines (after Docker build)
+├── haru_vla_env/                     # Python venv (git-ignored)
+├── launch_vla.sh                     # Launch script
+├── HARU_PROJECT_CONTEXT.md           # Full architecture reference (Korean)
+├── HARU_RUN_COMMANDS.txt             # All commands & usage guide (Korean)
+└── HARU_RESEARCH_GOALS.txt           # M.S. thesis goals & gap analysis (Korean)
 ```
 
 ---
 
 ## ROS2 Topic Map
 
-| Topic | Type | Direction |
-|-------|------|-----------|
-| `/haru_vision/compressed` | `CompressedImage` | vision → brain |
+| Topic | Type | Publisher → Subscriber |
+|-------|------|------------------------|
+| `/haru_vision/compressed` | `CompressedImage` | vision → attention, brain |
 | `/haru_audio/raw` | `Float32MultiArray` (16kHz PCM) | audio → brain |
-| `/haru_audio/vad` | `Bool` | audio → monitor |
+| `/haru_audio/vad` | `Bool` | audio → attention |
+| `/haru_attention/event` | `String` (JSON) | attention → brain |
 | `/haru_vla_raw` | `String` (JSON) | brain → logger/action |
 | `/haru_system1_command` | `String` (JSON) | logger → action *(HITL only)* |
-| `/haru_expression` | `Int32` | brain/logger → display |
-| `/haru_speech` | `String` | brain → TTS |
+| `/haru_expression` | `Int32` | brain/logger → *(display node, Phase 6)* |
+| `/haru_speech` | `String` | brain → *(TTS node, Phase 6)* |
 | `/haru_joints/state` | `Float32MultiArray` (9-dim, 10Hz) | action → logger |
 | `/haru_joints/torque` | `Bool` | logger → action *(kinesthetic)* |
 
@@ -333,18 +481,20 @@ HARU-embodied-social-ai/
 
 ## Data Format
 
-Each episode step is stored as a compressed NumPy archive:
+Each HITL episode step is stored as a compressed NumPy archive:
 
 ```python
-# step_XXXX.npz
+# data/episodes/episode_YYYYMMDD_HHMMSS/step_XXXX.npz
 {
-  "image":                (448, 896, 3)  uint8    # dual-camera frame
-  "action":               (12,)          float32  # corrected pose, normalized [-1, 1]
-  "action_vla":           (12,)          float32  # original VLA proposal
-  "is_corrected":         bool                    # whether human corrected this step
-  "language_instruction": bytes                   # task description
-  "speech_text":          bytes                   # what robot said
-  "emotion":              bytes                   # detected emotion label
+  "image":              (448, 896, 3)  uint8    # dual-camera frame
+  "action":             (12,)          float32  # corrected pose, normalized [-1, 1]
+  "action_vla":         (12,)          float32  # original VLA proposal
+  "is_corrected":       bool                    # whether human corrected
+  "language_instruction": bytes                 # task description
+  "speech_text":        bytes                   # what robot said
+  "emotion":            bytes                   # emotion label
+  "attention_source":   bytes                   # FSM state (e.g. "CONVERSING")  ★Phase 5.5
+  "attention_context":  bytes                   # situation context string        ★Phase 5.5
 }
 ```
 
@@ -352,28 +502,70 @@ Each episode step is stored as a compressed NumPy archive:
 
 ---
 
-## Research Contributions
+## Development Roadmap
 
-1. **Hierarchical Dual-System for Social HRI** — separating deliberative VLM reasoning (System 2) from reactive motor execution (System 1) enables both linguistic quality and physical responsiveness on an edge device
-
-2. **MindPower ToM + SWM** — 6-stage Theory of Mind (Perception→Belief→Desire→Intention→Decision→Action) with cross-session Social World Model persistence
-
-3. **Kinesthetic Teaching via HITL** — physical pose correction through direct manipulation with torque-off, encoder-capture pipeline; no need to know joint values
-
-4. **Episodic LoRA for Catastrophic Forgetting Prevention** — each interaction session is distilled into a LoRA adapter, keeping the base model identity intact while accumulating personalized behavior
+| Phase | Goal | Status |
+|-------|------|--------|
+| **Phase 1** | Jetson 환경 구축 + 기본 추론 검증 | ✅ 완료 |
+| **Phase 2** | ROS2 멀티노드 통합 | ✅ 완료 |
+| **Phase 3** | HITL 에피소드 로깅 파이프라인 | ✅ 완료 |
+| **Phase 4** | Gemma 4 12B + MindPower ToM + SWM | ✅ 완료 2026-06-18 |
+| **Phase 4.5** | haru_audio + VAD | ✅ 완료 2026-06-18 |
+| **Phase 5** | QLoRA 파이프라인 + SWM + Kinesthetic | ✅ 완료 2026-06-19 |
+| **Phase 5.5** | **Triple-System**: haru_attention + 이벤트 드리븐 | ✅ 완료 2026-06-22 |
+| **Phase 5.6** | GPU 복구 + auto_round W4A16 + TRT-LLM 경로 | ✅ **완료 2026-06-23** |
+| **Phase 5.7** | vLLM 컨테이너 VLM 서버 + 비전 지원 + brain_node 통합 | ✅ **완료 2026-06-25** |
+| **Phase 5.8** | 추론 속도 가속 (2.8 tok/s → 20+ tok/s, 64s → 5s) | 🔄 **다음 단계** |
+| **Phase 6** | Piper TTS + 표정 디스플레이 노드 | ⬜ 미착수 |
+| **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---
 
-## Limitations & Future Work
+## Research Contributions
+
+1. **Hierarchical Triple-System for Social HRI** — perceptual attention (System 3, CPU) + deliberative VLM reasoning (System 2, GPU, event-driven) + reactive motor execution (System 1, 50Hz)
+
+2. **MindPower ToM + SWM** — 6-stage Theory of Mind with cross-session Social World Model persistence and situation-context generation from attention FSM
+
+3. **Kinesthetic Teaching via HITL** — physical pose correction through direct manipulation with torque-off, encoder-capture pipeline; situation state (FSM) stored alongside each correction step
+
+4. **Episodic LoRA for Catastrophic Forgetting Prevention** — each session distilled into a LoRA adapter; base model identity preserved; behavior accumulated over months
+
+5. **W4A16 Quantization for Heterogeneous VLM** — monkey-patch solution for Gemma 4 Unified's interleaved sliding/full attention RoPE dimension mismatch, enabling auto_round quantization on Jetson AGX Orin (SM87)
+
+---
+
+## Limitations & Next Steps
 
 | Limitation | Status | Plan |
 |------------|--------|------|
-| ~45–50s inference latency | Known (Jetson + Gemma 4 12B bf16) | VAD-triggered inference, lighter fallback model |
-| No TTS output | `/haru_speech` topic ready | Piper TTS integration |
-| No expression display | `/haru_expression` topic ready | OLED / LED matrix node |
-| Single adapter (no context routing) | Latest adapter only | S-LoRA multi-adapter serving (Phase 6) |
-| SFT only (no reward model) | HITL-SFT | DPO after sufficient data collection |
-| System 1 = Smoothstep only | Adequate for social gestures | ACT / Diffusion Policy (Phase 6) |
+| 2.8 tok/s ≈ 64s inference | Known | Phase 5.8: fused dequant+GEMM kernel (target: 5s) |
+| No TTS output | `/haru_speech` topic ready | Piper TTS — **Phase 6** |
+| No expression display | `/haru_expression` topic ready | LED/OLED node — **Phase 6** |
+| No episodes collected yet | Pipeline ready | First HITL session needed |
+| Single adapter (no routing) | Latest adapter only | S-LoRA (Phase 6+) |
+| SFT only | HITL-SFT | DPO after sufficient data |
+
+---
+
+## Known Issues & Troubleshooting
+
+주요 문제와 해결법은 **[HARU_TROUBLESHOOTING_LOG.txt](HARU_TROUBLESHOOTING_LOG.txt)** 를 참고하세요.
+
+주요 항목 요약:
+
+| 카테고리 | 문제 | 상태 |
+|----------|------|------|
+| 양자화 | bitsandbytes 4-bit SM87 비호환 | ✅ auto_round로 대체 |
+| 양자화 | Jetson PyTorch 2.5 `set_submodule` 버그 → 손상 모델 | ✅ monkey-patch 적용 |
+| 양자화 | Gemma 4 RoPE 차원 불일치 (512 vs 256) | ✅ monkey-patch 적용 |
+| llama.cpp | `<unused49>` 비전 토큰 버그 | ❌ 포기 → vLLM 컨테이너 전환 |
+| vLLM 공식 | Marlin kernel shape mismatch (이종 어텐션 비호환) | ⚠️ 우회: custom FastAPI 서버 |
+| gptqmodel 2.2.0 | transformers 5.12.1 API 불일치 | ❌ 제거 → tritonv2_zp 백엔드 |
+| auto-gptq | Jetson PyPI 메타데이터 버전 불일치 | ❌ pip 거부 |
+| TRT-LLM Docker | ffmpeg SM87 NVCC 아키텍처 오류 | ✅ build.sh 수정 |
+| TRT-LLM Docker | mooncake/nixl 테스트 실패 | ✅ --skip-tests 추가 |
+| ROS2 빌드 | setuptools 81.0.0 symlink-install 실패 | ✅ 수동 install 구조 |
 
 ---
 
@@ -382,7 +574,8 @@ Each episode step is stored as a compressed NumPy archive:
 1. Kahneman, D. *Thinking, Fast and Slow.* Farrar, Straus and Giroux, 2011.
 2. Google DeepMind. **"Gemma 4 Technical Report."** (2026).
 3. Hu, E., et al. **"LoRA: Low-Rank Adaptation of Large Language Models."** ICLR 2022.
-4. Chi, C., et al. **"Diffusion Policy: Visuomotor Policy Learning via Action Diffusion."** RSS 2023.
-5. Zhao, T., et al. **"Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware (ACT)."** RSS 2023.
-6. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
-7. Dettmers, T., et al. **"QLoRA: Efficient Finetuning of Quantized LLMs."** NeurIPS 2023.
+4. Dettmers, T., et al. **"QLoRA: Efficient Finetuning of Quantized LLMs."** NeurIPS 2023.
+5. Chi, C., et al. **"Diffusion Policy: Visuomotor Policy Learning via Action Diffusion."** RSS 2023.
+6. Zhao, T., et al. **"Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware (ACT)."** RSS 2023.
+7. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
+8. Intel. **"AutoRound: Sign-Gradient-Descent-based Weight-Only Quantization."** (2024).

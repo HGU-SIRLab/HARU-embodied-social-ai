@@ -1,5 +1,5 @@
 # Project HARU: Embodied Social AI Architecture
-> 최종 업데이트: 2026-06-23 | **Phase 5.5 완료 + 추론 가속 구현 진행 중** — GPU 복구 + TRT-LLM / AutoRound 경로 추가
+> 최종 업데이트: 2026-06-25 | **Phase 5.7 완료** — vLLM 컨테이너 기반 Gemma4 서버 구축 + 비전(VLM) 지원 + brain_node 전체 통합 완료 (8/8 체크포인트 ✅) | 다음: 추론 속도 가속 (2.8 tok/s → 20+ tok/s)
 
 ---
 
@@ -143,7 +143,7 @@
 
 **담당**: 언어 이해·생성, ToM 추론, 감정 분석, 행동 계획
 
-**선정 모델: Google Gemma 4 12B Unified** (bf16 기본 ~22GB, auto_round W4A16 양자화 ~6GB 지원)
+**선정 모델: Google Gemma 4 12B Unified** (bf16 기본 ~22GB / auto_round W4A16 ~6GB ✅ / TRT-LLM W4A16 ~6GB 🔄)
 
 **트리거 구조 (Phase 5.5 완료):**
 - `/haru_attention/event` 구독 → 상황 컨텍스트를 user_context로 Gemma 4에 전달
@@ -256,15 +256,53 @@ Phase 5.5에서 attention_node가 "인식" 단계를 전담하여 Gemma 4에 정
 
 ## 7. 에피소드 파인튜닝 전략 (온디바이스 QLoRA)
 
-### 추론 속도 3단계 경로 (brain_node.py 자동 선택)
-| 경로 | 모델 크기 | 예상 추론 속도 | 조건 |
-|------|-----------|---------------|------|
-| **TRT-LLM W4A16** | ~6GB | ~6-10s | Docker 빌드 완료 + 서버 실행 후 |
-| **auto_round W4A16** | ~6GB | ~10-20s | `quantize_gemma4_autoround.py` 완료 후 |
-| **HF bf16 GPU** | ~22GB | ~15-30s | 즉시 사용 가능 (GPU 복구됨) |
+### 추론 속도 경로 (brain_node.py 자동 선택)
+| 경로 | 모델 크기 | 추론 속도 | 상태 |
+|------|-----------|-----------|------|
+| **vLLM 컨테이너 서버 (포트 8000)** | ~7.4GB | **현재 2.8 tok/s ≈ 64s** (목표: 20+ tok/s ≈ 5s) | ✅ **운용 중 (Phase 5.7)** |
+| **auto_round W4A16 직접 로드** | ~7.4GB | ~10-20s | ✅ 완료 (2026-06-23) |
+| **HF bf16 GPU** | ~22GB | ~15-30s | ✅ 항상 사용 가능 |
 
-> ✅ **GPU 복구 (2026-06-23)**: torch 2.12.1+cu130 (CUDA 13.0, 시스템 불일치) → torch 2.5.0a0+nv24.08 (CUDA 12.6 호환) 교체. 61.4 GB 통합 메모리 정상 활성화.
+> ✅ **GPU 복구 (2026-06-23)**: torch 2.12.1+cu130 (CUDA 13.0 불일치) → torch 2.5.0a0+nv24.08 (CUDA 12.6 호환). 61.4 GB 통합 메모리 활성화.
+> ❌ **auto_round W4A16 초기 시도 실패 (2026-06-23)**: 저장 모델이 손상됨 — qweight 없음, 349 키만 저장. 원인: Jetson PyTorch 2.5 `set_submodule` exact type check 버그 (`type(mod) is not nn.Module`). 상세 버그 체인은 아래 참조.
+> ✅ **Jetson set_module 패치 + 양자화 완료 (2026-06-23)**: `_patched_set_module` monkey-patch(`getattr`/`setattr` 직접 탐색)로 버그 우회. 128-sample 프로덕션 완료 — 2 shard, 1333 키, 328 qweight, 7.3GB, 28.8분 소요.
 > ⚠️ **bitsandbytes 4-bit 불가**: SM87 CUDA 커널 미지원. auto_round/TRT-LLM 경로로 4-bit 구현.
+
+#### Gemma 4 Unified 양자화 기술 요점
+
+**해결된 문제 1 — RoPE 차원 불일치:**
+Gemma 4는 6레이어마다 `sliding_attention`(head_dim=256) / `full_attention`(global_head_dim=512)이 교대 배치됩니다. auto_round 0.13.1의 블록 단위 캘리브레이션이 position_embeddings를 재사용하면서 512 vs 256 차원 불일치 발생 → `apply_rotary_pos_emb` monkey-patch로 해결 (`scripts/quantize_gemma4_autoround.py` 참조).
+
+**해결된 문제 2 — Jetson PyTorch 2.5 `set_submodule` 버그 (2026-06-23 발견):**
+
+버그 체인:
+1. Jetson PyTorch 2.5의 `set_submodule`: `type(mod) is not torch.nn.Module` (exact type check, isinstance 아님) → 모든 nn.Module 서브클래스에서 AttributeError 발생
+2. auto_round의 `set_module()` → `try/except (AttributeError, KeyError): return` → 조용히 무시
+3. `pack_layer()` → `set_module(model, layer_name, QuantLinear)` → QuantLinear 모델에 설치 안 됨 (silent no-op)
+4. `release_layer_safely(layer)` → 원본 nn.Linear의 `weight = None` 설정 → weight 파괴
+5. `model.state_dict()` → None weight 제외, 349개 non-linear 키만 반환
+6. 저장된 safetensors: qweight 없음, 레이어 weight 없음 → 완전히 손상된 모델
+
+증상: 저장 파일 단일 shard, 349 키 (layernorm·embedding·layer_scalar만 존재)
+기대: 2 shard, 1333 키, 328 qweight
+
+**패치 (적용됨 — `scripts/quantize_gemma4_autoround.py`):**
+```python
+def _patched_set_module(model, key, new_module):
+    atoms = key.split(".")
+    name = atoms[-1]
+    parent = model
+    for atom in atoms[:-1]:
+        parent = getattr(parent, atom)
+    setattr(parent, name, new_module)
+
+# 세 모듈 모두 교체
+import auto_round.utils.model as _ar_model_mod
+_ar_model_mod.set_module = _patched_set_module
+_ar_export.set_module = _patched_set_module  # export 모듈
+```
+
+검증: 진단 실행 (4 샘플) → 328 qweight, 1333 키, 2 shard 확인.
 
 ### 메모리 계획 (Jetson 64GB)
 | 항목 | 점유량 |
@@ -321,7 +359,9 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 | **Phase 4.5** | 오디오 입력 노드 (haru_audio) + VAD | ✅ 완료 2026-06-18 |
 | **Phase 5** | QLoRA 파이프라인 + 세션 장기 기억 + 키네스테틱 티칭 | ✅ 완료 2026-06-19 |
 | **Phase 5.5** | **Triple-System**: haru_attention + 이벤트 드리븐 brain + 버그 수정 | ✅ **완료 2026-06-22** |
-| **Phase 5.6** | GPU 복구 + 추론 가속 (auto_round W4A16 + TRT-LLM 경로 구현) | 🔄 **진행 중 2026-06-23** |
+| **Phase 5.6** | GPU 복구 + TRT-LLM 경로 구현 + Jetson PyTorch 버그 패치 + auto_round W4A16 양자화 | ✅ **완료 2026-06-23** |
+| **Phase 5.7** | vLLM 컨테이너 기반 Gemma4 서버 + 비전(VLM) 지원 + brain_node 통합 테스트 | ✅ **완료 2026-06-25** |
+| **Phase 5.8** | 추론 속도 가속 (2.8 tok/s → 20+ tok/s, ~64s → ~5s) | 🔄 **진행 예정** |
 | **Phase 6** | Piper TTS 노드 + 표정 디스플레이 노드 | ⬜ 다음 단계 |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
@@ -335,6 +375,7 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 - System 3 / System 2 / System 1 분리 유지
 - attention_node: CPU만 사용 (GPU는 Gemma 4 전용)
 - Gemma 4: 4-bit 불가, bf16 22GB만
+- **Jetson PyTorch 2.5 `set_submodule` 버그**: `type(mod) is not nn.Module` 정확한 타입 체크로 모든 서브클래스에서 AttributeError → auto_round `set_module` 조용히 무시 → QuantLinear 설치 실패 → 원본 weight 파괴. `_patched_set_module`(`getattr/setattr` 직접 탐색)로 우회 적용됨.
 
 ### setuptools 81.0.0 이슈 (빌드 주의)
 - `colcon build --symlink-install`이 haru_brain / haru_attention에서 실패
@@ -343,6 +384,49 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
   - `install/{pkg}/lib/python3.10/site-packages/{pkg}-{ver}-py3.10.egg-info/` (수동 생성)
 - **소스 수정 시 재빌드 불필요** (symlink이므로 즉시 반영)
 - 다른 패키지(haru_audio 등) 수정 시: `colcon build --symlink-install --packages-select <pkg>`
+
+### Phase 5.7 — vLLM 컨테이너 기반 Gemma4 서버 + 비전 통합 (2026-06-25 완료)
+
+#### 구성
+- **컨테이너**: `haru_vllm_server` (`vllm:r36.5.tegra-aarch64-cu126-22.04-vllm` 이미지)
+- **서버**: `scripts/gemma4_server.py` (FastAPI + uvicorn, OpenAI Vision API 호환, 포트 8000)
+- **모델**: `data/gemma4_autoround_w4a16/` (W4A16, 7.4GB, auto_round:tritonv2_zp 백엔드)
+- **시작**: `bash scripts/run_vllm_server.sh`
+
+#### 핵심 구현
+- **비전 지원**: `AutoProcessor` (AutoTokenizer 대체) + `image_url` base64 디코딩 → PIL → `processor(text, images=images)`
+- **백엔드 패치**: `get_highest_priority_backend` monkey-patch로 broken gptqmodel 우회 → `auto_round:tritonv2_zp`
+- **직접 로드**: `Gemma4UnifiedForConditionalGeneration` + `convert_hf_model` + `post_init`
+- **brain_node 자동 연결**: `Gemma4TRTLLMInference.try_connect()` → True (포트 8000 응답 시)
+
+#### 통합 테스트 결과 (2026-06-25, 8/8 ✅)
+| 단계 | 결과 |
+|------|------|
+| vLLM 컨테이너 서버 port 8000 응답 | ✅ |
+| Gemma4TRTLLMInference.try_connect() | ✅ True, 모델명 "gemma4" |
+| brain_node 자동 TRT-LLM 모드 선택 | ✅ |
+| /haru_vision/compressed 수신 | ✅ |
+| /haru_attention/event 트리거 처리 | ✅ |
+| 비전+텍스트 동시 추론 (이미지 포함) | ✅ |
+| /haru_speech 발행 (JSON 파싱 완료) | ✅ |
+| /haru_expression + /haru_vla_raw 발행 | ✅ expr=1 (joy), head=(2300,2057,2041) |
+
+실제 출력 예:
+```
+[Brain] ✅ TRT-LLM 서버 연결 성공 — 고속 추론 모드 (W4A16 INT4)
+[Brain] [APPEARED] 64.8s | emotion=joy | speech="어머, 안녕하세요! 당신이 나타나니 정말 기뻐요."
+```
+
+#### 현재 속도 현황 & 병목
+- **현재**: 2.8 tok/s ≈ 64.8s (100-150 토큰 응답 기준)
+- **목표**: 20+ tok/s ≈ 5s
+- **병목 원인**: 모든 가용 백엔드(tritonv2_zp, torch_zp)가 SW 디퀀타이즈 후 분리 GEMM → SM87에서 bf16 기준선과 동일 속도
+- **막힌 경로들**:
+  - vLLM 공식 엔진: Marlin kernel shape mismatch (`a.size(1)=4096, size_k=8192`) — Gemma 4 이종 어텐션 비호환
+  - gptqmodel 2.2.0: transformers 5.12.1 API 불일치 (AutoModelForVision2Seq 삭제됨) → 제거
+  - auto-gptq: Jetson PyPI 메타데이터 버전 불일치 → pip 거부
+  - torch.compile: Triton 커널 트레이싱 IndexError → 제거
+- **다음 단계 (Phase 5.8)**: 퓨즈드 디퀀타이즈+GEMM 경로 확보 필요 (SM87 전용 커널 or exllamav2 시도)
 
 ### TensorRT-LLM 빌드 진행 중 (2026-06-23)
 - TRT-LLM 1.2.1: `Gemma4ForConditionalGeneration` 공식 지원 확인 (jetson-containers)
@@ -356,30 +440,33 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 robot_brain_workspace/
 ├── haru_vla_env/              ← Python venv (torch 2.5.0a0+nv24.08, transformers 5.12.1 등)
 ├── scripts/
-│   ├── test_gemma4.py
+│   ├── test_gemma4.py             ← bf16 기본 추론 테스트
+│   ├── test_autoround.py          ← W4A16 양자화 전체 기능 테스트 ★ 신규
 │   ├── train_lora.py              ← QLoRA 파인튜닝
 │   ├── convert_to_rlds.py
-│   ├── quantize_gemma4_autoround.py  ← W4A16 양자화 실행 스크립트 ★ 신규
-│   ├── build_trtllm_docker.sh        ← TRT-LLM Docker 빌드 ★ 신규
-│   ├── convert_gemma4_trtllm.sh      ← TRT-LLM 엔진 변환 ★ 신규
-│   └── run_trtllm_server.sh          ← TRT-LLM 서버 실행 ★ 신규
+│   ├── quantize_gemma4_autoround.py  ← W4A16 양자화 (RoPE 이종 차원 패치 포함) ★
+│   ├── gemma4_server.py              ← vLLM 컨테이너용 FastAPI 서버 (비전 지원) ★★
+│   ├── run_vllm_server.sh            ← vLLM 컨테이너 서버 시작 ★★
+│   ├── build_trtllm_docker.sh        ← TRT-LLM Docker 빌드 ★
+│   ├── convert_gemma4_trtllm.sh      ← TRT-LLM 엔진 변환 ★
+│   └── run_trtllm_server.sh          ← TRT-LLM 서버 실행 ★
 ├── data/
 │   ├── episodes/              ← HITL 수집 데이터 (attention_source/context 포함)
 │   ├── adapters/              ← 학습된 LoRA 어댑터
 │   ├── memory/                ← SWM 이력 (swm_history.json)
-│   ├── gemma4_autoround_w4a16/ ← auto_round W4A16 양자화 모델 (양자화 완료 후 생성)
+│   ├── gemma4_autoround_w4a16/ ← auto_round W4A16 양자화 모델 ✅ 완료
 │   ├── trtllm/engine/         ← TRT-LLM 엔진 (빌드 완료 후 생성)
 │   └── trtllm/visual_engine/  ← TRT-LLM 비전 인코더
 ├── src/
 │   ├── haru_vision/           ← 카메라 노드 (듀얼, 3Hz, 896×448 JPEG)
 │   ├── haru_audio/            ← 마이크 노드 (VAD, 16kHz, C270)
-│   ├── haru_attention/        ← System 3: 주의 노드 ★ Phase 5.5
+│   ├── haru_attention/        ← System 3: 주의 노드 (Phase 5.5)
 │   │   └── attention_node.py  ← 얼굴감지 + 5-State FSM + VAD통합
 │   ├── haru_brain/            ← System 2 (Gemma 4 12B)
-│   │   ├── brain_node.py          ← 3-tier 자동 선택 (TRT-LLM→AutoRound→HF)
-│   │   ├── gemma4_inference.py    ← HF bf16 기본 경로
-│   │   ├── gemma4_trtllm_inference.py   ← TRT-LLM 고속 경로 ★ 신규
-│   │   ├── gemma4_autoround_inference.py ← auto_round 중속 경로 ★ 신규
+│   │   ├── brain_node.py                  ← 3-tier 자동 선택 (TRT-LLM→AutoRound→HF)
+│   │   ├── gemma4_inference.py            ← HF bf16 기본 경로
+│   │   ├── gemma4_trtllm_inference.py     ← TRT-LLM 고속 경로
+│   │   ├── gemma4_autoround_inference.py  ← auto_round W4A16 중속 경로 ✅
 │   │   ├── tom_prompt.py          ← 침묵 규칙 + 상황 컨텍스트
 │   │   ├── session_memory.py
 │   │   └── adapter_manager.py
@@ -387,6 +474,7 @@ robot_brain_workspace/
 │   └── haru_logger/           ← HITL 로거 (attention_source/context 저장)
 ├── torch-2.5.0a0+...nv24.08...whl  ← Jetson 전용 torch wheel (사용됨)
 ├── launch_vla.sh              ← 실행 스크립트
+├── README.md                  ← 영문 전체 가이드 (Phase 5.6 업데이트)
 ├── HARU_PROJECT_CONTEXT.md    ← 이 파일
 ├── HARU_RESEARCH_GOALS.txt
 └── HARU_RUN_COMMANDS.txt

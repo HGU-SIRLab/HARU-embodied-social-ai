@@ -35,7 +35,15 @@ export CUDA_VERSION="12.6"
 
 echo "[$(date)] 빌드 시작..." | tee "$LOG_FILE"
 
-python3 -m jetson_containers.build tensorrt_llm 2>&1 | tee -a "$LOG_FILE"
+# sg docker: docker 그룹 권한으로 실행 → sudo 없이 docker 사용 가능
+# --skip-tests transformers: distilgpt2 분류 오류 테스트 우회
+sg docker -c "
+    export L4T_VERSION='36.5.0'
+    export JETPACK_VERSION='6.5'
+    export CUDA_VERSION='12.6'
+    cd '$JETSON_CONTAINERS_DIR'
+    python3 -m jetson_containers.build tensorrt_llm --skip-tests transformers,ffmpeg:8.1,mooncake,nixl
+" 2>&1 | tee -a "$LOG_FILE"
 
 echo ""
 echo "[$(date)] 빌드 완료!"

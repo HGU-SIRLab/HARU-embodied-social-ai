@@ -1,7 +1,7 @@
 ================================================================
 HARU 실행 명령어 & 운용 가이드
-System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B | System 1: haru_action (50Hz)
-최종 업데이트: 2026-06-23 (Phase 5.6: GPU 복구 + TRT-LLM/AutoRound 추론 가속 경로 추가)
+System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B VLM | System 1: haru_action (50Hz)
+최종 업데이트: 2026-06-25 (Phase 5.7 완료: vLLM 컨테이너 기반 Gemma4 VLM 서버 + 비전 지원 + brain_node 통합 8/8 ✅ | Phase 5.8: 추론 속도 가속)
 ================================================================
 
 
@@ -334,38 +334,103 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
   - 중국 모델 사용 금지 (Qwen, DeepSeek, GLM, InternVLA 등)
   - Gemma 4 12B: bitsandbytes 4-bit 비호환 (SM87 커널 미지원) → auto_round/TRT-LLM 경로로 4-bit 구현
   - torch: Jetson 전용 wheel 사용 중 (2.5.0a0+nv24.08, CUDA 12.6 호환)
-  - Gemma 4 추론 속도: bf16 GPU ~15-30s / auto_round W4A16 ~10-20s / TRT-LLM ~6-10s
+  - Gemma 4 추론 속도: bf16 GPU ~15-30s / vLLM 컨테이너 서버 현재 2.8 tok/s ≈ 64s (Phase 5.8 가속 목표)
+  - vLLM 컨테이너 서버는 gptqmodel 제거된 이미지 사용 (auto_round:tritonv2_zp 백엔드)
   - attention_node: CPU 전용 (GPU는 Gemma 4 전용)
   - 60초 타이머는 Phase 5.5에서 제거됨 — attention_node가 트리거 전담
   - speech: "" 빈 문자열 → 발화 없음, 몸짓만 실행 (정상 동작)
   - vision_node 충돌 시: source ~/.bashrc 후 재실행
 
 ================================================================
-[ 13. 추론 가속 (Phase 5.6) ]
+[ 13. 추론 서버 & 가속 (Phase 5.7 완료 / Phase 5.8 예정) ]
 ================================================================
 
   brain_node.py는 시작 시 자동으로 아래 순서로 추론 경로 선택:
-    1순위: TRT-LLM 서버 (포트 8000) → ~6-10s
-    2순위: auto_round W4A16 양자화 모델 → ~10-20s
+    1순위: vLLM 컨테이너 서버 (포트 8000) → 현재 2.8 tok/s (Phase 5.8 가속 목표: 20+ tok/s)
+    2순위: auto_round W4A16 직접 로드 → ~10-20s
     3순위: HF bf16 GPU (기본값, 즉시 사용 가능) → ~15-30s
 
 ------------------------------------------------------------
-13-1. auto_round W4A16 양자화 (1-3시간, 1회 실행)
+★ 13-0. vLLM 컨테이너 서버 시작 (Phase 5.7 — 현재 운용 방식) ✅
 ------------------------------------------------------------
 
+  # 서버 시작 (백그라운드 컨테이너)
+  bash /home/herobot/robot_brain_workspace/scripts/run_vllm_server.sh
+
+  # 서버 확인
+  curl http://localhost:8000/v1/models
+  curl http://localhost:8000/health
+
+  # 서버 중단
+  docker stop haru_vllm_server
+
+  # 서버 로그 확인
+  docker logs -f haru_vllm_server
+
+  # 컨테이너 내 상태 확인
+  docker exec -it haru_vllm_server nvidia-smi
+
+  [서버 구성]
+    컨테이너: haru_vllm_server
+    이미지: vllm:r36.5.tegra-aarch64-cu126-22.04-vllm (gptqmodel 제거됨)
+    서버: scripts/gemma4_server.py (FastAPI, OpenAI Vision API 호환)
+    모델: data/gemma4_autoround_w4a16/ (W4A16, 7.4GB)
+    백엔드: auto_round:tritonv2_zp (monkey-patch로 gptqmodel 우회)
+    비전: AutoProcessor + image_url base64 → PIL
+
+  [brain_node 연결 확인]
+    로그: "[Brain] ✅ TRT-LLM 서버 연결 성공 — 고속 추론 모드 (W4A16 INT4)"
+    모델명: "gemma4" (Gemma4TRTLLMInference.try_connect() → True)
+
+  [비전 테스트]
+    curl -s http://localhost:8000/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d '{"model":"gemma4","messages":[{"role":"user","content":"안녕?"}],"max_tokens":50}' | python3 -m json.tool
+
+------------------------------------------------------------
+13-1. auto_round W4A16 양자화 ✅ 완료 (2026-06-23, 128샘플, 28.8분)
+------------------------------------------------------------
+
+  ※ 초기 시도 실패 이력 (2026-06-23):
+    - 저장된 모델이 손상됨: qweight 없음, 349 키만 저장 (정상: 1333 키, 328 qweight)
+    - 원인: Jetson PyTorch 2.5 set_submodule exact type check 버그
+      · type(mod) is not nn.Module → 모든 서브클래스에서 AttributeError
+      · auto_round set_module이 silent no-op → QuantLinear 미설치
+      · release_layer_safely가 원본 weight = None으로 파괴
+    - 패치: _patched_set_module (getattr/setattr 직접 탐색) 적용
+    - 검증: 진단 스크립트 4-sample 실행 → 328 qweight, 1333 키, 2 shard 확인
+
+  # 완료 확인 (재실행 완료 후):
+  python3 -c "
+  from safetensors import safe_open; import os
+  d = '/home/herobot/robot_brain_workspace/data/gemma4_autoround_w4a16'
+  files = sorted(f for f in os.listdir(d) if f.endswith('.safetensors'))
+  keys = []
+  for f in files:
+      with safe_open(os.path.join(d, f), framework='pt', device='cpu') as sf:
+          keys += list(sf.keys())
+  qw = sum(1 for k in keys if 'qweight' in k)
+  print(f'파일: {len(files)}, 총 키: {len(keys)}, qweight: {qw}')
+  # 기대: 파일: 2, 총 키: ~1333, qweight: 328
+  "
+
+  # 전체 기능 테스트 (양자화 완료 후):
+  source /home/herobot/robot_brain_workspace/haru_vla_env/bin/activate
+  python3 /home/herobot/robot_brain_workspace/scripts/test_autoround.py
+
+  # 재실행이 필요한 경우:
   source /home/herobot/robot_brain_workspace/haru_vla_env/bin/activate
   nohup python3 /home/herobot/robot_brain_workspace/scripts/quantize_gemma4_autoround.py \
     2>&1 | tee /tmp/quantize.log &
   echo "양자화 PID: $!"
-
-  # 진행 상황 확인:
   tail -f /tmp/quantize.log
 
-  # 완료 확인:
-  ls /home/herobot/robot_brain_workspace/data/gemma4_autoround_w4a16/
-  # → config.json, *.safetensors 파일이 있으면 완료
-
-  완료 후: 다음 haru-brain 실행 시 자동으로 auto_round 경로 선택
+  기술 참고:
+    - Patch 1: Gemma 4 Unified 이종 RoPE (sliding head_dim=256 ↔ full head_dim=512)
+    - Patch 2: shared_kv_states=None 패치 (레이어 46, 47)
+    - Patch 3: Jetson PyTorch 2.5 set_submodule 버그 우회 (_patched_set_module) ★핵심
+    - MLLM calibration 우회 (gemma4_unified → LLM 전용 텍스트 캘리브레이션)
+    - 완료 후: 다음 haru-brain 실행 시 자동으로 auto_round 경로 선택
 
 ------------------------------------------------------------
 13-2. TRT-LLM Docker 빌드 (8-16시간, 1회 실행)
@@ -399,22 +464,86 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
     "[Brain] HuggingFace bf16 모델 준비 완료" → 기본 경로 (~15-30s)
 
 ================================================================
-[ 2026-06-23 Phase 5.6 진행 중 — 변경 이력 ]
+[ 2026-06-25 Phase 5.7 완료 — 변경 이력 ]
 ================================================================
 
-  [핵심 버그 수정]
+  [핵심 구현 — vLLM 컨테이너 기반 Gemma4 VLM 서버]
+  gemma4_server.py   : FastAPI + uvicorn OpenAI Vision API 호환 서버 (신규 ★★)
+                       - AutoProcessor (AutoTokenizer 대체) → 비전 지원
+                       - image_url base64 → PIL → processor(text, images=images)
+                       - backend monkey-patch: gptqmodel 우회 → auto_round:tritonv2_zp
+                       - Gemma4UnifiedForConditionalGeneration + convert_hf_model + post_init
+  run_vllm_server.sh : haru_vllm_server 컨테이너 시작 스크립트 (신규 ★★)
+                       - 모델 볼륨: data/gemma4_autoround_w4a16 → /model:ro
+                       - 서버 볼륨: scripts/gemma4_server.py → /opt/gemma4_server.py:ro
+                       - 폴링: 최대 120초 대기 후 준비 완료 확인
+
+  [통합 테스트 결과 (8/8 ✅)]
+  포트 8000 응답           : ✅
+  Gemma4TRTLLMInference   : ✅ try_connect() → True, model="gemma4"
+  brain_node 자동 TRT 모드 : ✅ "[Brain] ✅ TRT-LLM 서버 연결 성공"
+  비전 프레임 수신          : ✅ /haru_vision/compressed
+  attention 트리거 처리     : ✅ /haru_attention/event [APPEARED]
+  비전+텍스트 동시 추론     : ✅ (이미지 base64 → PIL → model)
+  /haru_speech 발행        : ✅ "어머, 안녕하세요! 당신이 나타나니 정말 기뻐요."
+  /haru_expression 발행    : ✅ expr=1 (joy), head=(2300,2057,2041)
+
+  [현재 속도 현황]
+  현재: 2.8 tok/s ≈ 64.8s/응답 (100-150 토큰 기준)
+  목표: 20+ tok/s ≈ 5s (Phase 5.8 가속 과제)
+  병목: 모든 가용 백엔드가 SW 디퀀타이즈 후 GEMM → SM87에서 bf16과 동일
+  막힌 경로:
+    - vLLM 공식 Marlin: Gemma4 이종 어텐션 shape mismatch (a.size(1)=4096, size_k=8192)
+    - gptqmodel 2.2.0: transformers 5.12.1 API 불일치 → 제거
+    - auto-gptq: Jetson PyPI 메타데이터 불일치 → pip 거부
+    - torch.compile: Triton kernel tracing IndexError → 제거
+
+  [Docker 이미지 변경]
+  vllm:r36.5.tegra-aarch64-cu126-22.04-vllm : gptqmodel 2.2.0 제거됨 (import 오류 방지)
+                                               auto_round + tritonv2_zp 정상 동작 확인
+
+================================================================
+[ 2026-06-23 Phase 5.6 진행 — 변경 이력 ]
+================================================================
+
+  [핵심 버그 수정 1 — GPU 복구]
   torch       : torch 2.12.1+cu130 (CUDA 13.0 요구, 시스템 CUDA 12.6 불일치)
                 → torch 2.5.0a0+nv24.08 (Jetson 전용, CUDA 12.6 호환) 교체
                 → GPU 61.4 GB 통합 메모리 정상 활성화 (이전: GPU 완전 비활성화)
-  torchvision : 버전 불일치 broken torchvision 제거
-                → auto_round 0.13.1 import 정상화
+  torchvision : 버전 불일치 broken torchvision 제거 → auto_round 0.13.1 import 정상화
+
+  [auto_round W4A16 양자화 — 핵심 기술 문제들]
+  문제 1: auto_round MLLM compressor가 gemma3 템플릿 적용 시 VLM calibration 실패
+  해결 1: gemma4_unified를 _LLM_ONLY_MODEL_TYPES에 추가 → 텍스트 전용 경로 강제
+
+  문제 2: Gemma 4 Unified 이종 어텐션 (sliding head_dim=256 / full head_dim=512)으로
+          auto_round 블록 단위 calibration 시 RoPE 차원 불일치 (RuntimeError 512 vs 256)
+  해결 2: apply_rotary_pos_emb monkey-patch — rot_dim = min(x.shape[-1], cos.shape[-1])
+          → 매칭되는 차원만 회전, 나머지 pass-through
+
+  문제 3: ★핵심★ Jetson PyTorch 2.5 set_submodule exact type check 버그
+          - PyTorch set_submodule: type(mod) is not torch.nn.Module (isinstance 아님)
+          - → 모든 nn.Module 서브클래스에서 AttributeError 발생
+          - → auto_round set_module: try/except (AttributeError, KeyError): return
+          - → QuantLinear 모델에 설치 안 됨 (silent no-op)
+          - → release_layer_safely: 원본 nn.Linear weight = None 파괴
+          - → model.state_dict(): 349 키만 반환 (layernorm, embedding만 남음)
+          - → 저장 safetensors: qweight 없음, 완전 손상
+          초기에 이 버그를 몰라 "양자화 성공"으로 잘못 기록 (6-23 오전)
+          이후 진단 스크립트로 root cause 확인 (6-23 오후)
+  해결 3: _patched_set_module 정의 (getattr/setattr 직접 탐색):
+          auto_round.utils.model, export.export_to_autoround.export, utils.weight_handler
+          세 모듈 모두 교체 → QuantLinear 정상 설치 확인
+  검증  : 4-sample 진단 실행 → 328 qweight, 1333 키, 2 shard 확인
 
   [구현]
   brain_node  : 3-tier 추론 경로 자동 선택 (TRT-LLM → AutoRound → HF bf16)
                 self._mode_tag으로 현재 경로 추적
   gemma4_trtllm_inference.py   : TRT-LLM OpenAI 호환 서버 추론 클래스 (신규)
   gemma4_autoround_inference.py: auto_round W4A16 양자화 추론 클래스 (신규)
-  quantize_gemma4_autoround.py : W4A16 양자화 실행 스크립트 (신규)
+                                 post_init → quantize_config.json 기반 backend 자동 감지
+  quantize_gemma4_autoround.py : W4A16 양자화 실행 스크립트 (3가지 패치 포함, set_module 패치 추가)
+  test_autoround.py            : 전체 기능 테스트 스크립트 (6섹션, 20+ 항목) (신규)
   build_trtllm_docker.sh       : TRT-LLM Docker 빌드 스크립트 (신규)
   convert_gemma4_trtllm.sh     : TRT-LLM 엔진 변환 스크립트 (신규)
   run_trtllm_server.sh         : TRT-LLM 서버 실행 스크립트 (신규)
@@ -422,6 +551,10 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
   [환경 변경]
   docker      : herobot 계정 docker 그룹 추가 완료 (sudo usermod -aG docker herobot)
   jetson-cont : git pull 완료 (ffmpeg:8.0 → ffmpeg:8.1 의존성 업데이트)
+
+  [정리된 파일]
+  scripts/diagnose_scale.py    : 버그 진단용 임시 스크립트 → 삭제됨
+  data/gemma4_diag_test/       : 진단 테스트 출력 (7.3GB) → 삭제됨
 
 ================================================================
 [ 2026-06-22 Phase 5.5 완료 — 변경 이력 ]

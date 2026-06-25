@@ -27,11 +27,10 @@ from .gemma4_inference import HaruResponse, JOINT_LIMITS, _NEUTRAL_ACTION, _make
 
 logger = logging.getLogger(__name__)
 
-QUANTIZED_MODEL_DIR = os.path.join(
-    os.path.dirname(__file__),
-    '..', '..', '..', '..', 'data', 'gemma4_autoround_w4a16'
+QUANTIZED_MODEL_DIR = os.environ.get(
+    'HARU_QUANTIZED_MODEL_DIR',
+    '/home/herobot/robot_brain_workspace/data/gemma4_autoround_w4a16'
 )
-QUANTIZED_MODEL_DIR = os.path.normpath(QUANTIZED_MODEL_DIR)
 
 
 def quantized_model_exists() -> bool:
@@ -58,7 +57,6 @@ class Gemma4AutoRoundInference:
     def load(self):
         logger.info(f'[AutoRound] W4A16 양자화 모델 로드: {self._model_dir}')
 
-        from auto_round.inference.convert_model import post_init
         from transformers import AutoProcessor
 
         try:
@@ -77,7 +75,20 @@ class Gemma4AutoRoundInference:
             local_files_only=True,
             trust_remote_code=True,
         )
-        post_init(self._model)
+
+        # Linear → QuantLinear 교체 및 커널 초기화
+        self._apply_convert_and_post_init()
+
+    def _apply_convert_and_post_init(self):
+        """convert_hf_model로 Linear→QuantLinear 교체 후 post_init 커널 초기화."""
+        try:
+            from auto_round.inference.convert_model import convert_hf_model, post_init
+            target_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            self._model, used_backends = convert_hf_model(self._model, target_device=target_device)
+            post_init(self._model, used_backends)
+            logger.info(f'[AutoRound] QuantLinear 변환 완료 (backends={used_backends})')
+        except Exception as e:
+            logger.warning(f'[AutoRound] convert_hf_model 실패 (무시): {e}')
 
         # LoRA 어댑터 적용 (있으면)
         adapter_path = latest_adapter()

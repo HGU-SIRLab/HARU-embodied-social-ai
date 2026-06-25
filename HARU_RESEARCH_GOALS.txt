@@ -1,6 +1,6 @@
 ================================================================
 HARU 석사 연구 목표 (조형민, 한동대학교)
-작성일: 2026-06-19 | 업데이트: 2026-06-23 (Phase 5.6 진행 중 — GPU 복구 + 추론 가속)
+작성일: 2026-06-19 | 업데이트: 2026-06-25 (Phase 5.7 완료 — vLLM 컨테이너 기반 Gemma4 VLM 서버 + 비전 지원 + brain_node 전체 통합 8/8 ✅ | Phase 5.8 예정: 추론 속도 가속)
 ================================================================
 
 
@@ -119,20 +119,32 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
 
 
 ================================================================
-[ 현재 달성도 — 갭 분석 (2026-06-22 기준) ]
+[ 현재 달성도 — 갭 분석 (2026-06-25 기준) ]
 ================================================================
 
 ------------------------------------------------------------
 원칙 1. Pre-trained Foundation         ██████████ 100%  ✅
 ------------------------------------------------------------
-  ✅ Gemma 4 12B (bf16 GPU ~22GB, auto_round W4A16 ~6GB 경로 추가)
+  ✅ Gemma 4 12B (bf16 GPU ~22GB)
+  ✅ GPU 활성화 (torch 2.5.0a0+nv24.08, 61.4 GB 통합 메모리) [2026-06-23]
+  ✅ Gemma 4 이종 RoPE 패치 (sliding head_dim=256 ↔ full head_dim=512) [2026-06-23]
+  ✅ Jetson PyTorch 2.5 set_submodule 버그 발견·패치 [2026-06-23]
+     - 버그: type(mod) is not nn.Module (exact check) → QuantLinear 설치 실패 → weight 파괴
+     - 패치: _patched_set_module (getattr/setattr 직접 탐색)
+  ✅ auto_round W4A16 양자화 완료 (128 샘플, 28.8분) [2026-06-23]
+     - 결과: 328 qweight, 1333 키, 2 shard, 7.4GB
+     - 경로: data/gemma4_autoround_w4a16/
   ✅ PEFT LoRA — 베이스 가중치 frozen
   ✅ QLoRA 학습 파이프라인 (scripts/train_lora.py)
   ✅ 어댑터 자동 로드 (adapter_manager.py)
-  ✅ GPU 활성화 (torch 2.5.0a0+nv24.08, 61.4 GB 통합 메모리) [2026-06-23]
-  ✅ 3-tier 추론 경로 자동 선택 (TRT-LLM → AutoRound → HF bf16) [2026-06-23]
+  ✅ vLLM 컨테이너 기반 OpenAI 호환 추론 서버 구축 [2026-06-25]
+     - gemma4_server.py (FastAPI + uvicorn, 포트 8000)
+     - 비전 지원: AutoProcessor + image_url base64 → PIL
+     - 백엔드: auto_round:tritonv2_zp (gptqmodel 우회 monkey-patch)
+  ✅ brain_node 전체 통합 (포트 8000 자동 감지 → TRT-LLM 모드) [2026-06-25]
+  ⚠️ 현재 속도: 2.8 tok/s ≈ 64s/응답 (목표: 20+ tok/s ≈ 5s) → Phase 5.8 가속 필요
 
-  남은 것: 실제 에피소드 수집 후 첫 어댑터 학습 실행
+  남은 것 (Phase 5.8): 퓨즈드 디퀀타이즈+GEMM 경로 확보 → 추론 속도 5s 이하 달성
 
 ------------------------------------------------------------
 원칙 2. SWM + Adaptive ToM             ███████░░░  75%  ⚠️
@@ -190,8 +202,10 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
   ❌ 파국적 망각 방지 실증 검증 미완
 
 ------------------------------------------------------------
-전체 달성도 (Phase 5.5 완료)           ████████░░  80%
-Phase 6 (TTS + 표정) 완료 후 예상      █████████░  88%
+전체 달성도 (Phase 5.7 완료)           █████████░  87%
+  ↑ Phase 5.7에서 +2%: VLM 비전 통합 + brain_node 완전 통합
+Phase 5.8 (추론 가속 5s) 완료 후        █████████░  90%
+Phase 6 (TTS + 표정) 완료 후            ██████████  92%+
 ------------------------------------------------------------
 
 
@@ -199,10 +213,23 @@ Phase 6 (TTS + 표정) 완료 후 예상      █████████░  88
 [ 갭을 좁히는 우선순위 로드맵 ]
 ================================================================
 
-[진행 중 — Phase 5.6 (2026-06-23)]
-  8. 🔄 auto_round W4A16 양자화 실행 중 (백그라운드, ~1-3시간)
-  9. 🔄 TRT-LLM Docker 빌드 실행 중 (백그라운드, ~8-16시간)
-  결과: 추론 속도 bf16 ~15-30s → auto_round ~10-20s → TRT-LLM ~6-10s
+[완료 — Phase 5.7 (2026-06-25)]
+  8a. ✅ GPU 복구 (torch 2.5.0a0+nv24.08, CUDA 12.6 호환)
+  8b. ✅ Gemma 4 Unified 이종 RoPE 패치 개발 (sliding 256 ↔ full 512 차원)
+  8c. ❌ auto_round W4A16 양자화 초기 시도 실패
+      - 저장 모델 손상: qweight 없음, 349 키만 저장 (완전 손상)
+      - 원인 1: OffloadManager convert_module_to_hp + reload 순서 버그 (low_cpu_mem_usage=False로 우회)
+      - 원인 2 (근본): Jetson PyTorch 2.5 set_submodule exact type check 버그
+        → auto_round set_module이 silent no-op → QuantLinear 미설치 → weight 파괴
+  8d. ✅ Jetson PyTorch set_module 버그 패치 (2026-06-23)
+      - _patched_set_module: getattr/setattr 직접 탐색으로 set_submodule 우회
+      - 진단 검증: 4-sample 실행 → 328 qweight, 1333 키, 2 shard 확인
+  8e. ✅ W4A16 프로덕션 양자화 완료 (128 샘플, 28.8분, 328 qweight)
+  9. ✅ vLLM 컨테이너 서버 + 비전 지원 + brain_node 통합 완료 (2026-06-25)
+     - gemma4_server.py: OpenAI Vision API 호환, 포트 8000
+     - 비전: AutoProcessor + image_url → PIL → 모델 입력
+     - 통합: 8/8 체크포인트 ✅ (포트 8000 연결 → 비전+텍스트 추론 → /haru_speech 발행)
+  결과: 추론 속도 bf16 ~15-30s → auto_round W4A16 현재 2.8 tok/s ≈ 64s → Phase 5.8 가속 목표 5s
 
 [완료 — Phase 5.5 (2026-06-22)]
   1. ✅ haru_attention 패키지 구현
