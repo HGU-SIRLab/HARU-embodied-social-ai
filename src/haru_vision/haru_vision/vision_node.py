@@ -6,7 +6,9 @@ import cv2
 import numpy as np
 
 # SSH 환경 등 디스플레이가 없으면 imshow 시도 안 함
+# OpenCV가 GTK/Cocoa 없이 빌드된 경우도 헤드리스로 동작
 _HAS_DISPLAY = bool(os.environ.get('DISPLAY'))
+_DISPLAY_WORKING = _HAS_DISPLAY  # 첫 imshow 실패 시 False로 변경
 
 IMG_SIZE   = 448   # 각 카메라 정방형 크기
 JPEG_QUAL  = 80
@@ -55,9 +57,14 @@ class HaruVisionNode(Node):
         else:
             merged = cv2.hconcat([body_frame, body_frame])
 
-        if _HAS_DISPLAY:
-            cv2.imshow('HARU Vision', merged)
-            cv2.waitKey(1)
+        global _DISPLAY_WORKING
+        if _DISPLAY_WORKING:
+            try:
+                cv2.imshow('HARU Vision', merged)
+                cv2.waitKey(1)
+            except cv2.error:
+                _DISPLAY_WORKING = False
+                self.get_logger().warn('cv2.imshow 불가 — 헤드리스 모드로 전환')
 
         ok, buf = cv2.imencode('.jpg', merged,
                                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUAL])
@@ -88,8 +95,11 @@ def main(args=None):
     finally:
         node.cap_head.release()
         node.cap_body.release()
-        if _HAS_DISPLAY:
-            cv2.destroyAllWindows()
+        if _DISPLAY_WORKING:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
         node.destroy_node()
         rclpy.shutdown()
 

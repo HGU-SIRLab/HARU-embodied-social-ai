@@ -72,6 +72,12 @@ data/trtllm/
 # auto_round 양자화 모델 (대용량, 로컬 생성)
 data/gemma4_autoround_w4a16/
 
+# Phase 5.8: vLLM용 패치 모델 디렉토리 (safetensors 대용량)
+data/gemma4_vllm_patched/
+
+# Phase 5.8: torch.compile 캐시 (바이너리, 109MB)
+data/vllm_compile_cache/
+
 # ============================================================
 # 테스트 파일
 # ============================================================

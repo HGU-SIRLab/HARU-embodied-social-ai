@@ -1,6 +1,6 @@
 ================================================================
 HARU 석사 연구 목표 (조형민, 한동대학교)
-작성일: 2026-06-19 | 업데이트: 2026-06-25 (Phase 5.7 완료 — vLLM 컨테이너 기반 Gemma4 VLM 서버 + 비전 지원 + brain_node 전체 통합 8/8 ✅ | Phase 5.8 예정: 추론 속도 가속)
+작성일: 2026-06-19 | 업데이트: 2026-06-26 (Phase 5.8 완료 — vLLM W4A16 Marlin+CUDAGraph 2.8→19 tok/s (7×), haru_all 전체 테스트 5/5 ✅)
 ================================================================
 
 
@@ -142,9 +142,11 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
      - 비전 지원: AutoProcessor + image_url base64 → PIL
      - 백엔드: auto_round:tritonv2_zp (gptqmodel 우회 monkey-patch)
   ✅ brain_node 전체 통합 (포트 8000 자동 감지 → TRT-LLM 모드) [2026-06-25]
-  ⚠️ 현재 속도: 2.8 tok/s ≈ 64s/응답 (목표: 20+ tok/s ≈ 5s) → Phase 5.8 가속 필요
-
-  남은 것 (Phase 5.8): 퓨즈드 디퀀타이즈+GEMM 경로 확보 → 추론 속도 5s 이하 달성
+  ✅ 속도 가속 완료 (Phase 5.8): 2.8 tok/s → **19 tok/s (7×)** [2026-06-26]
+     - vLLM W4A16 AutoRound + Marlin INT4 GEMM + CUDAGraph + torch.compile
+     - 텍스트: 19.6 tok/s / 비전: 19.3 tok/s (이미지 전처리 포함)
+     - 50-tok 응답: 2.6s (목표 5s 달성) ✅
+     - gemma4_mm_patch.py: Gemma4UnifiedVisionEmbedder 구현 (encoder-free)
 
 ------------------------------------------------------------
 원칙 2. SWM + Adaptive ToM             ███████░░░  75%  ⚠️
@@ -202,9 +204,8 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
   ❌ 파국적 망각 방지 실증 검증 미완
 
 ------------------------------------------------------------
-전체 달성도 (Phase 5.7 완료)           █████████░  87%
-  ↑ Phase 5.7에서 +2%: VLM 비전 통합 + brain_node 완전 통합
-Phase 5.8 (추론 가속 5s) 완료 후        █████████░  90%
+전체 달성도 (Phase 5.8 완료)           █████████░  90%  ✅
+  ↑ Phase 5.8에서 +3%: 추론 가속 7× (2.8→19 tok/s) + haru_all 전체 통합
 Phase 6 (TTS + 표정) 완료 후            ██████████  92%+
 ------------------------------------------------------------
 
@@ -229,7 +230,13 @@ Phase 6 (TTS + 표정) 완료 후            ██████████  92%
      - gemma4_server.py: OpenAI Vision API 호환, 포트 8000
      - 비전: AutoProcessor + image_url → PIL → 모델 입력
      - 통합: 8/8 체크포인트 ✅ (포트 8000 연결 → 비전+텍스트 추론 → /haru_speech 발행)
-  결과: 추론 속도 bf16 ~15-30s → auto_round W4A16 현재 2.8 tok/s ≈ 64s → Phase 5.8 가속 목표 5s
+  10. ✅ Phase 5.8 추론 가속 완료 (2026-06-26)
+      - vLLM W4A16 + Marlin INT4 + CUDAGraph + torch.compile → 19 tok/s (7× 향상)
+      - run_vllm_server.sh 교체 (vllm serve, 컴파일 캐시 109MB 영구 저장)
+      - gemma4_mm_patch.py: Gemma4UnifiedVisionEmbedder + unified weight mapper
+      - vision_node.py: 헤드리스 모드 fix (cv2.imshow 예외 처리)
+      - haru_all 5/5 노드 전체 동작 ✅
+  결과: 2.8 tok/s → 19 tok/s (7×), 50-tok 응답 ~2.6s (목표 5s 달성)
 
 [완료 — Phase 5.5 (2026-06-22)]
   1. ✅ haru_attention 패키지 구현
