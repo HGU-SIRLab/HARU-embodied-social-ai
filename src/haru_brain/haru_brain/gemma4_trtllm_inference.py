@@ -120,29 +120,40 @@ class Gemma4TRTLLMInference:
         hf_messages = self._tom.build_messages(image, user_context, audio=None)
         oai_messages = self._to_openai_format(hf_messages, image)
 
-        t0 = time.time()
-        try:
-            resp = self._client.chat.completions.create(
-                model=self._model_name or self._model_id,
-                messages=oai_messages,
-                max_tokens=300,
-                temperature=0.0,
-                stream=False,
-            )
-            raw_text = resp.choices[0].message.content or ''
-            elapsed = time.time() - t0
-            logger.info(
-                f'[TRT-LLM] 추론 완료: {elapsed:.1f}s | '
-                f'토큰: {resp.usage.completion_tokens if resp.usage else "?"}'
-            )
-            result = self._parse_response(raw_text)
-            self._tom.add_assistant_turn(raw_text)
-            return result
+        # max_model_len=2048, 입력 길이 불명이므로 보수적으로 설정
+        # 컨텍스트 초과 시 max_tokens를 줄여 재시도
+        MAX_MODEL_LEN = 2048
+        for max_tok in (350, 250, 150):
+            t0 = time.time()
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self._model_name or self._model_id,
+                    messages=oai_messages,
+                    max_tokens=max_tok,
+                    temperature=0.0,
+                    stream=False,
+                )
+                raw_text = resp.choices[0].message.content or ''
+                elapsed = time.time() - t0
+                logger.info(
+                    f'[TRT-LLM] 추론 완료: {elapsed:.1f}s | '
+                    f'토큰: {resp.usage.completion_tokens if resp.usage else "?"}'
+                )
+                result = self._parse_response(raw_text)
+                self._tom.add_assistant_turn(raw_text)
+                return result
 
-        except Exception as e:
-            elapsed = time.time() - t0
-            logger.error(f'[TRT-LLM] 추론 오류 ({elapsed:.1f}s): {e}')
-            return _make_fallback()
+            except Exception as e:
+                elapsed = time.time() - t0
+                err_str = str(e)
+                if 'maximum context length' in err_str or '400' in err_str:
+                    logger.warning(f'[TRT-LLM] 컨텍스트 초과 (max_tok={max_tok}), 줄여 재시도')
+                    continue
+                logger.error(f'[TRT-LLM] 추론 오류 ({elapsed:.1f}s): {e}')
+                return _make_fallback()
+
+        logger.error('[TRT-LLM] 컨텍스트 초과 — 모든 max_tokens 시도 실패')
+        return _make_fallback()
 
     # ── 포맷 변환 ─────────────────────────────────────────────────────
 
@@ -191,12 +202,27 @@ class Gemma4TRTLLMInference:
         text = raw
         data = None
 
+        # 완전한 ```json ... ``` 블록
         m = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
         if m:
             try:
                 data = json.loads(m.group(1))
             except json.JSONDecodeError:
                 pass
+
+        # 잘린 코드블록 처리: ```json 시작 후 ``` 없이 끊긴 경우
+        if data is None:
+            m = re.search(r'```json\s*(\{.*)', text, re.DOTALL)
+            if m:
+                frag = m.group(1).rstrip()
+                # 닫는 중괄호 수 보완
+                opens = frag.count('{') - frag.count('}')
+                if opens > 0:
+                    frag = frag + '}' * opens
+                try:
+                    data = json.loads(frag)
+                except json.JSONDecodeError:
+                    pass
 
         if data is None:
             candidates = list(

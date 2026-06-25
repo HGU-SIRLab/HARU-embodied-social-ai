@@ -309,6 +309,7 @@ class HaruAttentionNode(Node):
         # ── 내부 상태 ─────────────────────────────────────────────────────────
         self._prev_gray: np.ndarray | None = None
         self._vad_was_active = False   # VAD rising/falling edge 감지용
+        self._vad_active_since: float | None = None  # VAD True 시작 시각 (최소 지속 필터)
         self._frame_lock = threading.Lock()
 
         self.get_logger().info(
@@ -358,23 +359,32 @@ class HaruAttentionNode(Node):
 
     # ── VAD 콜백 ──────────────────────────────────────────────────────────────
 
+    _VAD_MIN_DUR = 0.3   # 최소 발화 지속 시간 (초) — 노이즈/overflow 필터링
+
     def _vad_cb(self, msg: Bool):
         """
         VAD Bool 토픽은 발화 중(True) / 침묵(False)을 계속 발행.
-        audio_node는 발화가 끝날 때 /haru_audio/raw를 발행하고
-        이 Bool은 실시간 상태를 나타냄.
-        우리는 True→False 하강 엣지(발화 완료)를 감지해 FSM에 전달.
+        True → False 하강 엣지(발화 완료)를 감지해 FSM에 전달.
+        단, True 구간이 _VAD_MIN_DUR 미만이면 노이즈로 간주하고 무시.
         """
+        import time as _time
         is_speaking = bool(msg.data)
 
+        if is_speaking and not self._vad_was_active:
+            # 상승 엣지: 발화 시작 시각 기록
+            self._vad_active_since = _time.monotonic()
+
         if self._vad_was_active and not is_speaking:
-            # 발화 완료 (하강 엣지)
-            event = self._fsm.on_vad_complete()
-            if event:
-                self.get_logger().info(
-                    f'[Attention] VAD 완료 트리거 — state={self._fsm.state}'
-                )
-                self._publish_event(event)
+            # 하강 엣지: 발화 완료 — 최소 지속 시간 체크
+            dur = (_time.monotonic() - self._vad_active_since) if self._vad_active_since else 0.0
+            self._vad_active_since = None
+            if dur >= self._VAD_MIN_DUR:
+                event = self._fsm.on_vad_complete()
+                if event:
+                    self.get_logger().info(
+                        f'[Attention] VAD 완료 트리거 — state={self._fsm.state} ({dur:.2f}s)'
+                    )
+                    self._publish_event(event)
 
         self._vad_was_active = is_speaking
 
