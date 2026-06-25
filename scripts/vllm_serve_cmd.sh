@@ -8,4 +8,5 @@ exec /opt/venv/bin/vllm serve /model \
     --trust-remote-code \
     --port 8000 \
     --max-num-seqs 4 \
-    --served-model-name gemma4
+    --served-model-name gemma4 \
+    --enable-prefix-caching
