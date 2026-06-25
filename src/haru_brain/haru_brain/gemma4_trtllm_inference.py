@@ -40,6 +40,15 @@ def _image_to_b64(image: Image.Image, quality: int = 85) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _extract_speech_field(text: str) -> str | None:
+    """스트리밍 중 "speech" 필드 값이 완성됐는지 감지.
+    완성되면 값(빈 문자열 포함) 반환, 미완성이면 None."""
+    m = re.search(r'"speech"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if m:
+        return m.group(1)
+    return None
+
+
 class Gemma4TRTLLMInference:
     """
     TRT-LLM 서버 기반 Gemma 4 12B 추론.
@@ -112,6 +121,7 @@ class Gemma4TRTLLMInference:
         image: Image.Image,
         user_context: str = '',
         audio: np.ndarray | None = None,
+        speech_ready_cb=None,   # callable(speech_text: str) — streaming 시 조기 발행
     ) -> HaruResponse:
         if self._client is None:
             raise RuntimeError('load()를 먼저 호출하세요.')
@@ -122,23 +132,34 @@ class Gemma4TRTLLMInference:
 
         # max_model_len=2048, 입력 길이 불명이므로 보수적으로 설정
         # 컨텍스트 초과 시 max_tokens를 줄여 재시도
-        MAX_MODEL_LEN = 2048
         for max_tok in (350, 250, 150):
             t0 = time.time()
             try:
-                resp = self._client.chat.completions.create(
+                stream = self._client.chat.completions.create(
                     model=self._model_name or self._model_id,
                     messages=oai_messages,
                     max_tokens=max_tok,
                     temperature=0.0,
-                    stream=False,
+                    stream=True,
                 )
-                raw_text = resp.choices[0].message.content or ''
+
+                raw_text = ''
+                speech_cb_fired = False
+
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content or ''
+                    raw_text += delta
+
+                    # speech 필드 완성 즉시 콜백 (조기 TTS 발행)
+                    if not speech_cb_fired and speech_ready_cb is not None:
+                        s = _extract_speech_field(raw_text)
+                        if s is not None:
+                            speech_cb_fired = True
+                            speech_ready_cb(s)
+
                 elapsed = time.time() - t0
-                logger.info(
-                    f'[TRT-LLM] 추론 완료: {elapsed:.1f}s | '
-                    f'토큰: {resp.usage.completion_tokens if resp.usage else "?"}'
-                )
+                n_tok = len(raw_text.split())
+                logger.info(f'[TRT-LLM] 추론 완료: {elapsed:.1f}s | ~{n_tok}words')
                 result = self._parse_response(raw_text)
                 self._tom.add_assistant_turn(raw_text)
                 return result

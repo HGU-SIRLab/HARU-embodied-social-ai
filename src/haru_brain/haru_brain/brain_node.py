@@ -230,7 +230,19 @@ class HaruBrainNode(Node):
     ):
         try:
             t0 = time.time()
-            resp = self._brain.infer(frame, user_context=context, audio=audio)
+            speech_published = [False]
+
+            def _early_speech(text: str):
+                """streaming: speech 필드 완성 즉시 TTS 발행 (체감 지연 단축)."""
+                msg = String()
+                msg.data = text
+                self.pub_speech.publish(msg)
+                speech_published[0] = True
+                if text:
+                    self.get_logger().info(f'[Brain] [STREAM] speech 조기 발행: {repr(text[:40])}')
+
+            resp = self._brain.infer(frame, user_context=context, audio=audio,
+                                     speech_ready_cb=_early_speech)
             elapsed = time.time() - t0
             audio_tag = f' +audio({len(audio)/16000:.1f}s)' if audio is not None else ''
             speech_preview = f'"{resp.speech[:40]}"' if resp.speech else '(침묵)'
@@ -238,7 +250,8 @@ class HaruBrainNode(Node):
                 f'[Brain] [{source}] {elapsed:.1f}s{audio_tag} | '
                 f'emotion={resp.emotion} | speech={speech_preview}'
             )
-            self._publish(resp, context=context, source=source)
+            self._publish(resp, context=context, source=source,
+                          skip_speech=speech_published[0])
         except Exception as e:
             self.get_logger().error(f'[Brain] 추론 오류: {e}')
         finally:
@@ -247,7 +260,7 @@ class HaruBrainNode(Node):
 
     # ── 발행 ─────────────────────────────────────────────────────────────────
 
-    def _publish(self, resp, context: str = '', source: str = ''):
+    def _publish(self, resp, context: str = '', source: str = '', skip_speech: bool = False):
         cmd = resp.to_command_dict()
         if context:
             cmd['attention_context'] = context
@@ -263,9 +276,10 @@ class HaruBrainNode(Node):
         expr_msg.data = resp.expression_id
         self.pub_expr.publish(expr_msg)
 
-        speech_msg = String()
-        speech_msg.data = resp.speech  # "" 가능 — TTS 노드가 빈 문자열이면 침묵
-        self.pub_speech.publish(speech_msg)
+        if not skip_speech:
+            speech_msg = String()
+            speech_msg.data = resp.speech  # "" 가능 — TTS 노드가 빈 문자열이면 침묵
+            self.pub_speech.publish(speech_msg)
 
         act = cmd['action']
         self.get_logger().info(

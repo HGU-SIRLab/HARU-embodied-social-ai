@@ -5,10 +5,30 @@ MindPower 6단계 + Social World Model (SWM) 단기 기억
 
 from __future__ import annotations
 
+import json
+import re
+
 import numpy as np
 from PIL import Image
 
 from .session_memory import load_history, save_history
+
+
+def _compress_response(raw: str) -> str:
+    """전체 JSON 응답에서 speech+emotion+expression_id만 추출 (SWM 인퍼런스 윈도우 토큰 절약).
+    파싱 실패 시 원본 반환."""
+    try:
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if m:
+            data = json.loads(m.group())
+            speech = str(data.get('speech', ''))
+            emotion = str(data.get('emotion', 'neutral'))
+            expr_id = int(data.get('expression_id', 0))
+            return json.dumps({'speech': speech, 'emotion': emotion, 'expression_id': expr_id},
+                              ensure_ascii=False)
+    except Exception:
+        pass
+    return raw
 
 SYSTEM_PROMPT = """\
 당신은 HARU입니다. 사람과 감정적으로 교감하는 소셜 반려 로봇입니다.
@@ -35,20 +55,16 @@ SYSTEM_PROMPT = """\
   - 상황 파악이 필요해 잠깐 관찰만 하고 싶을 때
 침묵 시에도 action(몸짓)과 expression_id(표정)는 반드시 출력하세요.
 
-[하드웨어 — 관절 범위]
-head_tilt 1500~3086(중립2048), head_pan 1043~3071(중립2057), head_roll 1630~2452(중립2041)
-r_arm_pitch 1024~2451(중립1738), l_arm_pitch 37~1542(중립790)
-r_shoulder_roll 1000~2050(중립1525), r_elbow_pitch 2047~3062(중립2555)
-l_shoulder_roll 1047~2056(중립1552), l_elbow_pitch 1021~2007(중립1514)
-right_wheel/left_wheel -300~300 (이동 불필요시 0)
+[하드웨어 — 주요 관절 범위]
+head_tilt 1500~3086(중립2048) head_pan 1043~3071(중립2057) head_roll 1630~2452(중립2041)
+r_arm_pitch 1024~2451(중립1738) l_arm_pitch 37~1542(중립790)
 
 [표정] 0=neutral 1=joy 2=sadness 3=curiosity 4=surprise 5=empathy 6=thinking 7=concern
-[감정] neutral joy sadness curiosity surprise empathy excitement concern
 
 [응답 형식] — 반드시 아래 JSON만 출력. 추가 텍스트 없음. speech는 빈 문자열 가능.
-{"speech":"한국어 1~2문장 또는 빈 문자열","emotion":"감정","expression_id":0,"action":{"head_tilt":2048,"head_pan":2057,"head_roll":2041,"r_arm_pitch":1738,"l_arm_pitch":790,"r_shoulder_roll":1525,"r_elbow_pitch":2555,"l_shoulder_roll":1552,"l_elbow_pitch":1514,"right_wheel":0.0,"left_wheel":0.0},"duration":2.5}"""
+{"speech":"한국어 1~2문장","emotion":"감정","expression_id":0,"action":{"head_tilt":2048,"head_pan":2057,"head_roll":2041,"r_arm_pitch":1738,"l_arm_pitch":790},"duration":2.5}"""
 
-_HISTORY_WINDOW = 4  # user-assistant 쌍 기준 최근 4턴
+_HISTORY_WINDOW = 2  # user-assistant 쌍 기준 최근 2턴 (토큰 절약: 4→2)
 
 
 class TomPromptBuilder:
@@ -65,11 +81,11 @@ class TomPromptBuilder:
         # 디스크 이력 전체 (텍스트 쌍) — 트림 없이 유지, 저장 소스로 사용
         self._full_history: list[tuple[str, str]] = load_history()
 
-        # 추론 윈도우: 최근 _window 쌍만 메시지 형식으로 유지
+        # 추론 윈도우: 최근 _window 쌍만 (어시스턴트 응답은 speech+emotion만 압축)
         self._pairs: list[tuple[dict, dict]] = [
             (
                 {'role': 'user',      'content': [{'type': 'text', 'text': u}]},
-                {'role': 'assistant', 'content': a},
+                {'role': 'assistant', 'content': _compress_response(a)},
             )
             for u, a in self._full_history[-self._window:]
         ]
@@ -125,8 +141,8 @@ class TomPromptBuilder:
         self._full_history.append((user_text, raw_response))
         save_history(self._full_history)  # 전체 이력 기준으로 저장
 
-        # 추론 윈도우 갱신 (최근 _window 쌍만 유지)
-        asst_msg = {'role': 'assistant', 'content': raw_response}
+        # 추론 윈도우 갱신 (최근 _window 쌍만, 응답은 압축)
+        asst_msg = {'role': 'assistant', 'content': _compress_response(raw_response)}
         self._pairs.append((self._pending_user, asst_msg))
         self._pending_user = None
         if len(self._pairs) > self._window:
