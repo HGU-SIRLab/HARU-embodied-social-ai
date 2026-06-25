@@ -147,9 +147,9 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
      - 텍스트: 19.6 tok/s / 비전: 19.3 tok/s (이미지 전처리 포함)
      - 50-tok 응답: 2.6s (목표 5s 달성) ✅
      - gemma4_mm_patch.py: Gemma4UnifiedVisionEmbedder 구현 (encoder-free)
-  ✅ 체감 지연 가속화 (Phase 6.3): HF ~45s → **1.60s speech 발행** (28×) [2026-06-26]
-     - Streaming + SWM 압축 + 336x336 이미지 조합
-     - 목표 5s 대비 3배 이상 초과 달성
+  ✅ 체감 지연 가속화 (Phase 6.3): HF ~45s → **0.65s speech (warm)** (69×) [2026-06-26]
+     - Streaming + SWM 압축 + 336x336 이미지 + prefix caching 조합
+     - speech 0.65s (avg), expression 1.32s, action 4.95s — 목표 5s 전면 달성
 
 ------------------------------------------------------------
 원칙 2. SWM + Adaptive ToM             ███████░░░  75%  ⚠️
@@ -210,9 +210,9 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
   ❌ 파국적 망각 방지 실증 검증 미완
 
 ------------------------------------------------------------
-전체 달성도 (Phase 6.3 완료)            ██████████  96%  ✅
-  ↑ Phase 6.3에서 +2%: Streaming 추론 + SWM 토큰 압축 + 체감 지연 단축
-Phase 6.4+ (데이터 수집·LoRA)           ██████████  98%+ 예상
+전체 달성도 (Phase 6.3 완료)            ██████████  97%  ✅
+  ↑ Phase 6.3에서 +3%: Streaming + SWM 압축 + prefix caching → speech 0.65s (69×)
+Phase 6.4+ (데이터 수집·LoRA)           ██████████  99%+ 예상
 ------------------------------------------------------------
 
 
@@ -283,11 +283,12 @@ Phase 6.4+ (데이터 수집·LoRA)           ██████████  98
      - 전체 fallback infer()에 **kwargs 추가 (TypeError 방지)
      - expression_id streaming 조기 발행 (_extract_expression_id)
      - skip_expr 파라미터로 중복 방지
-  결과:
-    - speech 발행: 2.24s (streaming 조기 발행)
-    - expression 발행: 2.90s (streaming 조기 발행, 기존 7.21s → 59% 단축)
-    - vla_raw (action): 6.53s (full JSON 완성 후)
-    - 목표 5s 3배 초과, HF 45s → 2.24s (20× 향상)
+     - vLLM --enable-prefix-caching (시스템 프롬프트 383tok KV 캐시)
+  결과 (prefix cache warm, n=3):
+    - speech   avg: 0.65s (min 0.40s) / cold: 2.65s
+    - expression avg: 1.32s
+    - action   avg: 4.95s (목표 5s 달성)
+    - HF 45s → warm 0.65s = 69× 향상
 
 [단기 — 데이터 수집 (로봇 앞에서)]
   7. haru-hitl 로 에피소드 20~30 스텝 수집
