@@ -1,6 +1,6 @@
 ================================================================
 HARU 석사 연구 목표 (조형민, 한동대학교)
-작성일: 2026-06-19 | 업데이트: 2026-06-26 (Phase 6.1 완료 — Piper TTS 노드, edge-tts ko-KR-SunHiNeural, 400ms 생성, haru_all 6/6 노드 ✅)
+작성일: 2026-06-19 | 업데이트: 2026-06-26 (Phase 6.2 완료 — pygame 표정 디스플레이 노드, 8가지 감정, haru_all 7/7 노드 ✅)
 ================================================================
 
 
@@ -174,10 +174,11 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
   ✅ TTS 노드 구현 (Phase 6.1 완료)
      - edge-tts ko-KR-SunHiNeural 400ms 생성, mpg123 USB 스피커 출력
      - /haru_speech → 실제 한국어 발화 (brain 응답을 음성으로 출력)
-
-  ❌ 표정 디스플레이 노드 미구현
-
-  → Phase 6.2 (표정 디스플레이) 완료 후: 90%+ 예상
+  ✅ 표정 디스플레이 노드 구현 (Phase 6.2 완료)
+     - pygame X11 (DISPLAY=:0) 800×600 얼굴 렌더러
+     - 8가지 감정: neutral/joy/sadness/curiosity/surprise/empathy/thinking/concern
+     - ease-in-out 전환 애니메이션, 4초 주기 자동 눈 깜빡임
+     - /haru_expression (Int32) 구독, haru_all 7/7 노드
 
 ------------------------------------------------------------
 원칙 4. Human-in-the-Loop              █████████░  92%  ✅
@@ -206,9 +207,9 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
   ❌ 파국적 망각 방지 실증 검증 미완
 
 ------------------------------------------------------------
-전체 달성도 (Phase 6.1 완료)            █████████░  92%  ✅
-  ↑ Phase 6.1에서 +2%: TTS 노드 구현 (실제 한국어 발화), haru_all 6/6 노드
-Phase 6.2 (표정 디스플레이) 완료 후     ██████████  94%+
+전체 달성도 (Phase 6.2 완료)            ██████████  94%  ✅
+  ↑ Phase 6.2에서 +2%: 표정 디스플레이 노드 구현, haru_all 7/7 노드
+Phase 6.3+ (데이터 수집·LoRA)           ██████████  96%+ 예상
 ------------------------------------------------------------
 
 
@@ -258,12 +259,20 @@ Phase 6.2 (표정 디스플레이) 완료 후     ██████████
      - haru_all 6개 노드 동시 실행 확인
      - max_model_len 2048로 확장 (이전 1024 컨텍스트 초과 문제 해결)
 
-[단기 — Phase 6.2]
-  5. 표정 디스플레이 노드 (/haru_expression → 하드웨어)
+[완료 — Phase 6.2 (2026-06-26)]
+  5. ✅ 표정 디스플레이 노드 구현 (src/haru_expression/, pygame X11)
+     - /haru_expression (Int32) → 8가지 감정 얼굴 애니메이션
+     - 800×600 pygame 렌더러: 눈·눈썹·입 bezier 곡선, 볼 블러시 (joy/empathy)
+     - ease-in-out 전환 3.0/s, 자동 눈 깜빡임 4초 주기
+     - DISPLAY=:0 (Xorg card1-DP-1), ROS2 spin 데몬 스레드 분리
+     - haru_all 7개 노드 동시 실행 확인
   결과: 원칙 3 (Proactive HRI) 90%+
 
 [단기 — 데이터 수집 (로봇 앞에서)]
   6. haru-hitl 로 에피소드 20~30 스텝 수집
+
+[단기 — 데이터 수집 (로봇 앞에서)]
+  6. haru-hitl 로 에피소드 20~30 스텝 수집 (7/7 노드 포함)
   7. python scripts/train_lora.py → 첫 어댑터 검증
   결과: 원칙 1, 4, 5 실증 완료
 
@@ -289,9 +298,9 @@ Phase 6.2 (표정 디스플레이) 완료 후     ██████████
     · ✅ VAD race condition 수정
     · ✅ attention_source/context HITL 데이터 저장
 
-  우선순위 높음 (Phase 6):
-    · TTS 노드 (Piper — 실제 발화 없이는 소셜 로봇 불완전)
-    · 표정 디스플레이 노드
+  완료됨 (Phase 6.1~6.2 — 2026-06-26):
+    · ✅ TTS 노드 (edge-tts ko-KR-SunHiNeural, mpg123 USB 스피커)
+    · ✅ 표정 디스플레이 노드 (pygame 8가지 감정, haru_all 7/7)
 
   우선순위 중간:
     · 에피소드 평가 스크립트 (교정 감소율 자동 계산)

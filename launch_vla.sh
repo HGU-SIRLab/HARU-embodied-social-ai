@@ -72,7 +72,7 @@ case "$MODE" in
     ;;
 
   hitl)
-    echo "[LAUNCH] HITL 데이터 수집 모드 (Triple-System + TTS + hitl_logger)"
+    echo "[LAUNCH] HITL 데이터 수집 모드 (Triple-System + TTS + 표정 + hitl_logger)"
 
     source "${VENV}/bin/activate"
 
@@ -94,7 +94,10 @@ case "$MODE" in
     HARU_AUDIO_OUT="${HARU_AUDIO_OUT:-hw:3,0}" ros2 run haru_tts tts_node &
     PID_TTS=$!
 
-    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} ${PID_TTS} 2>/dev/null; echo '[STOP] 종료'" SIGINT SIGTERM
+    DISPLAY="${DISPLAY:-:0}" ros2 run haru_expression expression_node &
+    PID_EXPR=$!
+
+    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} ${PID_TTS} ${PID_EXPR} 2>/dev/null; echo '[STOP] 종료'" SIGINT SIGTERM
 
     # hitl_node: 포그라운드 실행 (터미널 입력 필요)
     ros2 run haru_logger hitl_node
@@ -102,9 +105,9 @@ case "$MODE" in
     ;;
 
   all)
-    echo "[LAUNCH] 전체: vision + attention + audio + brain + action + TTS"
+    echo "[LAUNCH] 전체: vision + attention + audio + brain + action + TTS + 표정"
 
-    # 모든 노드가 venv(edge-tts, sounddevice 등) 접근 가능하도록 먼저 활성화
+    # 모든 노드가 venv(edge-tts, sounddevice, pygame 등) 접근 가능하도록 먼저 활성화
     source "${VENV}/bin/activate"
 
     ros2 run haru_vision vision_node &
@@ -125,11 +128,14 @@ case "$MODE" in
     HARU_AUDIO_OUT="${HARU_AUDIO_OUT:-hw:3,0}" ros2 run haru_tts tts_node &
     PID_TTS=$!
 
-    echo "[INFO] PIDs — vision:${PID_VISION}  attention:${PID_ATTENTION}  audio:${PID_AUDIO}  action:${PID_ACTION}  brain:${PID_BRAIN}  tts:${PID_TTS}"
+    DISPLAY="${DISPLAY:-:0}" ros2 run haru_expression expression_node &
+    PID_EXPR=$!
+
+    echo "[INFO] PIDs — vision:${PID_VISION}  attention:${PID_ATTENTION}  audio:${PID_AUDIO}  action:${PID_ACTION}  brain:${PID_BRAIN}  tts:${PID_TTS}  expr:${PID_EXPR}"
     echo "[INFO] 상황 모니터링: ros2 topic echo /haru_attention/event"
     echo "[INFO] Ctrl+C 로 전체 종료"
 
-    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} ${PID_TTS} 2>/dev/null; echo '[STOP] 전체 노드 종료'" SIGINT SIGTERM
+    trap "kill ${PID_VISION} ${PID_ATTENTION} ${PID_AUDIO} ${PID_ACTION} ${PID_BRAIN} ${PID_TTS} ${PID_EXPR} 2>/dev/null; echo '[STOP] 전체 노드 종료'" SIGINT SIGTERM
     wait
     ;;
 
