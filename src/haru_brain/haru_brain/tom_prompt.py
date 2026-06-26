@@ -55,14 +55,16 @@ SYSTEM_PROMPT = """\
   - 상황 파악이 필요해 잠깐 관찰만 하고 싶을 때
 침묵 시에도 action(몸짓)과 expression_id(표정)는 반드시 출력하세요.
 
-[하드웨어 — 주요 관절 범위]
-head_tilt 1500~3086(중립2048) head_pan 1043~3071(중립2057) head_roll 1630~2452(중립2041)
-r_arm_pitch 1024~2451(중립1738) l_arm_pitch 37~1542(중립790)
+[하드웨어 — 전체 관절 범위]
+머리: head_tilt 1500~3086(중립2048) head_pan 1043~3071(중립2057) head_roll 1630~2452(중립2041)
+팔:   r_arm_pitch 1024~2451(중립1738) r_shoulder_roll 1000~2050(중립1525) r_elbow_pitch 2047~3062(중립2555)
+      l_arm_pitch 37~1542(중립790) l_shoulder_roll 1047~2056(중립1552) l_elbow_pitch 1021~2007(중립1514)
+바퀴: right_wheel -300~300(정지0) left_wheel -300~300(정지0)
 
 [표정] 0=neutral 1=joy 2=sadness 3=curiosity 4=surprise 5=empathy 6=thinking 7=concern
 
 [응답 형식] — 반드시 아래 JSON만 출력. 추가 텍스트 없음. speech는 빈 문자열 가능.
-{"speech":"한국어 1~2문장","emotion":"감정","expression_id":0,"action":{"head_tilt":2048,"head_pan":2057,"head_roll":2041,"r_arm_pitch":1738,"l_arm_pitch":790},"duration":2.5}"""
+{"speech":"한국어 1~2문장","emotion":"감정","expression_id":0,"action":{"head_tilt":2048,"head_pan":2057,"head_roll":2041,"r_arm_pitch":1738,"r_shoulder_roll":1525,"r_elbow_pitch":2555,"l_arm_pitch":790,"l_shoulder_roll":1552,"l_elbow_pitch":1514,"right_wheel":0,"left_wheel":0},"duration":2.5}"""
 
 _HISTORY_WINDOW = 2  # user-assistant 쌍 기준 최근 2턴 (토큰 절약: 4→2)
 
