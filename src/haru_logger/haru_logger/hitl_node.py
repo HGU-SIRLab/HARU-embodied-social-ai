@@ -124,7 +124,10 @@ class HaruHITLNode(Node):
         print(f'  감정  : {cmd.get("emotion", "-")}')
         print(f'  머리  : tilt={action.get("head_tilt","-")}  '
               f'pan={action.get("head_pan","-")}  roll={action.get("head_roll","-")}')
-        print(f'  오른팔: {action.get("r_arm_pitch", "-")}')
+        print(f'  오른팔: pitch={action.get("r_arm_pitch","-")}  '
+              f'shoulder={action.get("r_shoulder_roll","-")}  elbow={action.get("r_elbow_pitch","-")}')
+        print(f'  왼팔  : pitch={action.get("l_arm_pitch","-")}  '
+              f'shoulder={action.get("l_shoulder_roll","-")}  elbow={action.get("l_elbow_pitch","-")}')
         print(f'  바퀴  : right={action.get("right_wheel",0):.0f}  left={action.get("left_wheel",0):.0f}')
         speech = cmd.get('speech', '')
         if not speech:

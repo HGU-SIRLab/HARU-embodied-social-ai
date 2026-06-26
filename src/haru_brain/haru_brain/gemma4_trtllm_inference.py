@@ -57,6 +57,22 @@ def _extract_expression_id(text: str) -> int | None:
     return None
 
 
+def _extract_emotion(text: str) -> str | None:
+    m = re.search(r'"emotion"\s*:\s*"([^"]*)"', text)
+    return m.group(1) if m else None
+
+
+def _extract_action_dict(text: str) -> dict | None:
+    """action dict가 완성됐을 때 추출 (action dict는 중첩 객체 없음)."""
+    m = re.search(r'"action"\s*:\s*(\{[^}]+\})', text)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
 class Gemma4TRTLLMInference:
     """
     TRT-LLM 서버 기반 Gemma 4 12B 추론.
@@ -131,6 +147,7 @@ class Gemma4TRTLLMInference:
         audio: np.ndarray | None = None,
         speech_ready_cb=None,      # callable(str) — speech 필드 완성 시
         expression_ready_cb=None,  # callable(int) — expression_id 완성 시
+        action_ready_cb=None,      # callable(dict) — action dict 완성 시 (조기 동작)
     ) -> HaruResponse:
         if self._client is None:
             raise RuntimeError('load()를 먼저 호출하세요.')
@@ -155,6 +172,7 @@ class Gemma4TRTLLMInference:
                 raw_text = ''
                 speech_cb_fired = False
                 expr_cb_fired = False
+                action_cb_fired = False
 
                 for chunk in stream:
                     delta = chunk.choices[0].delta.content or ''
@@ -173,6 +191,13 @@ class Gemma4TRTLLMInference:
                         if eid is not None:
                             expr_cb_fired = True
                             expression_ready_cb(eid)
+
+                    # action dict 완성 즉시 콜백 (조기 몸짓 실행 — ~3s 절약)
+                    if not action_cb_fired and action_ready_cb is not None:
+                        adict = _extract_action_dict(raw_text)
+                        if adict is not None:
+                            action_cb_fired = True
+                            action_ready_cb(adict)
 
                 elapsed = time.time() - t0
                 n_tok = len(raw_text.split())

@@ -231,8 +231,9 @@ class HaruBrainNode(Node):
         try:
             t0 = time.time()
             speech_published = [False]
-
             expr_published = [False]
+            action_published = [False]
+            early_action_dict = [None]
 
             def _early_speech(text: str):
                 """streaming: speech 필드 완성 즉시 TTS 발행 (체감 지연 단축)."""
@@ -251,9 +252,28 @@ class HaruBrainNode(Node):
                 expr_published[0] = True
                 self.get_logger().info(f'[Brain] [STREAM] expression 조기 발행: {eid}')
 
+            def _early_action(adict: dict):
+                """streaming: action dict 완성 즉시 haru_vla_raw 발행 (~3s 절약)."""
+                early_action_dict[0] = adict
+                action_published[0] = True
+                early_cmd = {
+                    'expression_id': 0,
+                    'emotion': '',
+                    'speech': '',
+                    'action': adict,
+                    'duration': 2.5,
+                    'attention_source': source,
+                    'attention_context': context,
+                }
+                raw_msg = String()
+                raw_msg.data = json.dumps(early_cmd, ensure_ascii=False)
+                self.pub_raw.publish(raw_msg)
+                self.get_logger().info(f'[Brain] [STREAM] action 조기 발행: head=({adict.get("head_tilt",0):.0f},...)')
+
             resp = self._brain.infer(frame, user_context=context, audio=audio,
                                      speech_ready_cb=_early_speech,
-                                     expression_ready_cb=_early_expr)
+                                     expression_ready_cb=_early_expr,
+                                     action_ready_cb=_early_action)
             elapsed = time.time() - t0
             audio_tag = f' +audio({len(audio)/16000:.1f}s)' if audio is not None else ''
             speech_preview = f'"{resp.speech[:40]}"' if resp.speech else '(침묵)'
@@ -263,7 +283,8 @@ class HaruBrainNode(Node):
             )
             self._publish(resp, context=context, source=source,
                           skip_speech=speech_published[0],
-                          skip_expr=expr_published[0])
+                          skip_expr=expr_published[0],
+                          skip_raw=action_published[0])
         except Exception as e:
             self.get_logger().error(f'[Brain] 추론 오류: {e}')
         finally:
@@ -273,7 +294,8 @@ class HaruBrainNode(Node):
     # ── 발행 ─────────────────────────────────────────────────────────────────
 
     def _publish(self, resp, context: str = '', source: str = '',
-                 skip_speech: bool = False, skip_expr: bool = False):
+                 skip_speech: bool = False, skip_expr: bool = False,
+                 skip_raw: bool = False):
         cmd = resp.to_command_dict()
         if context:
             cmd['attention_context'] = context
@@ -281,9 +303,10 @@ class HaruBrainNode(Node):
             cmd['attention_source'] = source
         json_str = json.dumps(cmd, ensure_ascii=False)
 
-        raw_msg = String()
-        raw_msg.data = json_str
-        self.pub_raw.publish(raw_msg)
+        if not skip_raw:
+            raw_msg = String()
+            raw_msg.data = json_str
+            self.pub_raw.publish(raw_msg)
 
         if not skip_expr:
             expr_msg = Int32()
