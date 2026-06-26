@@ -296,9 +296,12 @@ class HaruBrainNode(Node):
             self.pub_speech.publish(speech_msg)
 
         act = cmd['action']
+        arm_r = f'{act.get("r_arm_pitch",0):.0f}/{act.get("r_shoulder_roll",0):.0f}/{act.get("r_elbow_pitch",0):.0f}'
+        arm_l = f'{act.get("l_arm_pitch",0):.0f}/{act.get("l_shoulder_roll",0):.0f}/{act.get("l_elbow_pitch",0):.0f}'
         self.get_logger().info(
             f'[Pub] expr={resp.expression_id} speech={"(침묵)" if not resp.speech else repr(resp.speech[:30])} '
-            f'head=({act["head_tilt"]:.0f},{act["head_pan"]:.0f},{act["head_roll"]:.0f})'
+            f'head=({act["head_tilt"]:.0f},{act["head_pan"]:.0f},{act["head_roll"]:.0f}) '
+            f'r_arm={arm_r} l_arm={arm_l} wheel=({act.get("right_wheel",0):.0f},{act.get("left_wheel",0):.0f})'
         )
 
 
