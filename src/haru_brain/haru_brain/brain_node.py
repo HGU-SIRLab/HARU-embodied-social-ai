@@ -268,7 +268,7 @@ class HaruBrainNode(Node):
                 raw_msg = String()
                 raw_msg.data = json.dumps(early_cmd, ensure_ascii=False)
                 self.pub_raw.publish(raw_msg)
-                self.get_logger().info(f'[Brain] [STREAM] action 조기 발행: head=({adict.get("head_tilt",0):.0f},...)')
+                self.get_logger().info(f'[Brain] [STREAM] action 조기 발행: head=({adict.get("ht",0):.0f},{adict.get("hp",0):.0f},{adict.get("hr",0):.0f})')
 
             resp = self._brain.infer(frame, user_context=context, audio=audio,
                                      speech_ready_cb=_early_speech,
@@ -319,12 +319,12 @@ class HaruBrainNode(Node):
             self.pub_speech.publish(speech_msg)
 
         act = cmd['action']
-        arm_r = f'{act.get("r_arm_pitch",0):.0f}/{act.get("r_shoulder_roll",0):.0f}/{act.get("r_elbow_pitch",0):.0f}'
-        arm_l = f'{act.get("l_arm_pitch",0):.0f}/{act.get("l_shoulder_roll",0):.0f}/{act.get("l_elbow_pitch",0):.0f}'
+        arm_r = f'{act.get("rap",0):.0f}/{act.get("rsr",0):.0f}/{act.get("rep",0):.0f}'
+        arm_l = f'{act.get("lap",0):.0f}/{act.get("lsr",0):.0f}/{act.get("lep",0):.0f}'
         self.get_logger().info(
             f'[Pub] expr={resp.expression_id} speech={"(침묵)" if not resp.speech else repr(resp.speech[:30])} '
-            f'head=({act["head_tilt"]:.0f},{act["head_pan"]:.0f},{act["head_roll"]:.0f}) '
-            f'r_arm={arm_r} l_arm={arm_l} wheel=({act.get("right_wheel",0):.0f},{act.get("left_wheel",0):.0f})'
+            f'head=({act.get("ht",0):.0f},{act.get("hp",0):.0f},{act.get("hr",0):.0f}) '
+            f'r_arm={arm_r} l_arm={arm_l} wheel=({act.get("rw",0):.0f},{act.get("lw",0):.0f})'
         )
 
 

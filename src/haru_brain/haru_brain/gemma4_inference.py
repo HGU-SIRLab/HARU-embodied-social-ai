@@ -29,19 +29,23 @@ logger = logging.getLogger(__name__)
 
 MODEL_ID = 'google/gemma-4-12B-it'
 
-# 관절 범위 (lo, hi, default)
+# 관절 범위 (lo, hi, default) — 약어 키 사용으로 출력 토큰 32개 절약 (~2.3s)
+# ht=head_tilt hp=head_pan hr=head_roll
+# rap=r_arm_pitch rsr=r_shoulder_roll rep=r_elbow_pitch
+# lap=l_arm_pitch lsr=l_shoulder_roll lep=l_elbow_pitch
+# rw=right_wheel lw=left_wheel
 JOINT_LIMITS = {
-    'head_tilt':       (1500, 3086, 2048),
-    'head_pan':        (1043, 3071, 2057),
-    'head_roll':       (1630, 2452, 2041),
-    'r_arm_pitch':     (1024, 2451, 1738),
-    'l_arm_pitch':     (37,   1542,  790),
-    'r_shoulder_roll': (1000, 2050, 1525),
-    'r_elbow_pitch':   (2047, 3062, 2555),
-    'l_shoulder_roll': (1047, 2056, 1552),
-    'l_elbow_pitch':   (1021, 2007, 1514),
-    'right_wheel':     (-300,  300,  0.0),
-    'left_wheel':      (-300,  300,  0.0),
+    'ht':  (1500, 3086, 2048),
+    'hp':  (1043, 3071, 2057),
+    'hr':  (1630, 2452, 2041),
+    'rap': (1024, 2451, 1738),
+    'rsr': (1000, 2050, 1525),
+    'rep': (2047, 3062, 2555),
+    'lap': (37,   1542,  790),
+    'lsr': (1047, 2056, 1552),
+    'lep': (1021, 2007, 1514),
+    'rw':  (-300,  300,  0.0),
+    'lw':  (-300,  300,  0.0),
 }
 
 _NEUTRAL_ACTION = {k: float(v[2]) for k, v in JOINT_LIMITS.items()}

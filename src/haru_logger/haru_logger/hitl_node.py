@@ -47,8 +47,7 @@ LINE = '━' * 56
 
 # action_node의 HARU_LIMITS와 동일한 순서 (Float32MultiArray 인덱스 매핑)
 POSITION_JOINT_ORDER = [
-    'r_arm_pitch', 'l_arm_pitch', 'r_shoulder_roll', 'r_elbow_pitch',
-    'l_shoulder_roll', 'l_elbow_pitch', 'head_pan', 'head_tilt', 'head_roll',
+    'rap', 'lap', 'rsr', 'rep', 'lsr', 'lep', 'hp', 'ht', 'hr',
 ]
 
 
@@ -122,13 +121,10 @@ class HaruHITLNode(Node):
             print(f'  컨텍스트: {context[:60]}')
         print(f'  표정  : {EXPRESSION_LABELS.get(expr_id, "?")} ({expr_id})')
         print(f'  감정  : {cmd.get("emotion", "-")}')
-        print(f'  머리  : tilt={action.get("head_tilt","-")}  '
-              f'pan={action.get("head_pan","-")}  roll={action.get("head_roll","-")}')
-        print(f'  오른팔: pitch={action.get("r_arm_pitch","-")}  '
-              f'shoulder={action.get("r_shoulder_roll","-")}  elbow={action.get("r_elbow_pitch","-")}')
-        print(f'  왼팔  : pitch={action.get("l_arm_pitch","-")}  '
-              f'shoulder={action.get("l_shoulder_roll","-")}  elbow={action.get("l_elbow_pitch","-")}')
-        print(f'  바퀴  : right={action.get("right_wheel",0):.0f}  left={action.get("left_wheel",0):.0f}')
+        print(f'  머리  : ht={action.get("ht","-")}  hp={action.get("hp","-")}  hr={action.get("hr","-")}')
+        print(f'  오른팔: rap={action.get("rap","-")}  rsr={action.get("rsr","-")}  rep={action.get("rep","-")}')
+        print(f'  왼팔  : lap={action.get("lap","-")}  lsr={action.get("lsr","-")}  lep={action.get("lep","-")}')
+        print(f'  바퀴  : rw={action.get("rw",0):.0f}  lw={action.get("lw",0):.0f}')
         speech = cmd.get('speech', '')
         if not speech:
             print('  발화  : (침묵 — 몸짓만)')
@@ -308,15 +304,15 @@ class HaruHITLNode(Node):
             print(f'\n  {LINE[:30]}')
             print('  관절 값 입력 (Enter = 현재값 유지)')
             for field, lo, hi in [
-                ('head_tilt',       1500, 3086),
-                ('head_pan',        1043, 3071),
-                ('head_roll',       1630, 2452),
-                ('r_arm_pitch',     1024, 2451),
-                ('l_arm_pitch',     37,   1542),
-                ('r_shoulder_roll', 1000, 2050),
-                ('r_elbow_pitch',   2047, 3062),
-                ('l_shoulder_roll', 1047, 2056),
-                ('l_elbow_pitch',   1021, 2007),
+                ('ht',  1500, 3086),
+                ('hp',  1043, 3071),
+                ('hr',  1630, 2452),
+                ('rap', 1024, 2451),
+                ('lap', 37,   1542),
+                ('rsr', 1000, 2050),
+                ('rep', 2047, 3062),
+                ('lsr', 1047, 2056),
+                ('lep', 1021, 2007),
             ]:
                 cur = action.get(field, (lo + hi) // 2)
                 val = self._prompt(f'  {field} [{lo}-{hi}] 현재={cur}', cur)
@@ -324,7 +320,7 @@ class HaruHITLNode(Node):
 
         # ── 바퀴 (항상 수동: 속도 제어, 물리 시연 무의미) ──────────
         print('\n  바퀴 속도 (이동 불필요시 0 입력)')
-        for field in ('right_wheel', 'left_wheel'):
+        for field in ('rw', 'lw'):
             cur = action.get(field, 0.0)
             val = self._prompt(f'  {field} [-300~300] 현재={cur:.0f}', cur)
             corrected_action[field] = float(np.clip(float(val), -300, 300))

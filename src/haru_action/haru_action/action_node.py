@@ -7,22 +7,24 @@ import threading
 from dynamixel_sdk import *
 
 # ── 위치 제어 관절 (Protocol 2.0, Operating Mode 3) ───────────────────────────
+# 약어: rap=r_arm_pitch lap=l_arm_pitch rsr=r_shoulder_roll rep=r_elbow_pitch
+#       lsr=l_shoulder_roll lep=l_elbow_pitch hp=head_pan ht=head_tilt hr=head_roll
 HARU_LIMITS = {
-    "r_arm_pitch":     {"id": 3,  "min": 1024, "max": 2451},
-    "l_arm_pitch":     {"id": 4,  "min": 37,   "max": 1542},
-    "r_shoulder_roll": {"id": 5,  "min": 1000, "max": 2050},
-    "r_elbow_pitch":   {"id": 6,  "min": 2047, "max": 3062},
-    "l_shoulder_roll": {"id": 7,  "min": 1047, "max": 2056},
-    "l_elbow_pitch":   {"id": 8,  "min": 1021, "max": 2007},
-    "head_pan":        {"id": 10, "min": 1043, "max": 3071},
-    "head_tilt":       {"id": 11, "min": 1500, "max": 3086},
-    "head_roll":       {"id": 12, "min": 1630, "max": 2452},
+    "rap": {"id": 3,  "min": 1024, "max": 2451},
+    "lap": {"id": 4,  "min": 37,   "max": 1542},
+    "rsr": {"id": 5,  "min": 1000, "max": 2050},
+    "rep": {"id": 6,  "min": 2047, "max": 3062},
+    "lsr": {"id": 7,  "min": 1047, "max": 2056},
+    "lep": {"id": 8,  "min": 1021, "max": 2007},
+    "hp":  {"id": 10, "min": 1043, "max": 3071},
+    "ht":  {"id": 11, "min": 1500, "max": 3086},
+    "hr":  {"id": 12, "min": 1630, "max": 2452},
 }
 
 # ── 속도 제어 바퀴 (Protocol 2.0, Operating Mode 1) ──────────────────────────
 WHEEL_LIMITS = {
-    "right_wheel": {"id": 1, "min": -300, "max": 300},
-    "left_wheel":  {"id": 2, "min": -300, "max": 300},
+    "rw": {"id": 1, "min": -300, "max": 300},
+    "lw": {"id": 2, "min": -300, "max": 300},
 }
 
 ADDR_GOAL_POSITION   = 116

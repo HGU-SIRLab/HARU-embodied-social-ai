@@ -81,24 +81,28 @@ def load_episodes(episodes_dir: Path) -> list[dict]:
     return samples
 
 
-_ALL_JOINTS = [
-    'head_tilt', 'head_pan', 'head_roll',
-    'r_arm_pitch', 'r_shoulder_roll', 'r_elbow_pitch',
-    'l_arm_pitch', 'l_shoulder_roll', 'l_elbow_pitch',
-    'right_wheel', 'left_wheel',
-]
+# episode_writer의 long name → inference 약어 매핑
+_JOINT_ABBREV = {
+    'head_tilt': 'ht', 'head_pan': 'hp', 'head_roll': 'hr',
+    'r_arm_pitch': 'rap', 'r_shoulder_roll': 'rsr', 'r_elbow_pitch': 'rep',
+    'l_arm_pitch': 'lap', 'l_shoulder_roll': 'lsr', 'l_elbow_pitch': 'lep',
+    'right_wheel': 'rw',  'left_wheel': 'lw',
+}
 
 
 def _build_target_json(sample: dict) -> str:
     """샘플 → 모델이 생성해야 할 JSON 문자열 (inference 포맷과 동일)."""
     action_dict = normalized_to_action(sample['action'])
     expr_id = int(np.clip(round(action_dict.get('expression_id', 0)), 0, 7))
-    action_all = {k: round(action_dict[k], 1) for k in _ALL_JOINTS if k in action_dict}
+    # long name → 약어 변환 (inference 포맷 일치)
+    action_abbrev = {_JOINT_ABBREV[k]: round(v, 1)
+                     for k, v in action_dict.items()
+                     if k in _JOINT_ABBREV}
     return json.dumps({
         'speech':        sample['speech'],
         'emotion':       sample['emotion'],
         'expression_id': expr_id,
-        'action':        action_all,
+        'action':        action_abbrev,
         'duration':      2.5,
     }, ensure_ascii=False)
 
