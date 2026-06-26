@@ -94,13 +94,13 @@ The Triple-System separates *perceptual attention* (System 3, always-on CPU), *d
 
 ---
 
-## Phase 6.3 — Streaming Inference + Prefix Caching: 69× Speedup ✅ (2026-06-26)
+## Phase 6.4 — Action Early Callback + Abbreviated Keys: 7.4s total ✅ (2026-06-26)
 
 ### Current Inference Architecture
 
 | Tier | Method | Size | Latency | Status |
 |------|--------|------|---------|--------|
-| **1 (Active)** | **vLLM W4A16 + Marlin INT4 + CUDAGraph** | **~7.4 GB** | **19 tok/s · speech 0.65s warm** | **✅ Running** |
+| **1 (Active)** | **vLLM W4A16 + Marlin INT4 + CUDAGraph** | **~7.4 GB** | **19 tok/s · speech ~2s warm · full 7.4s** | **✅ Running** |
 | 2 | auto_round W4A16 direct load | ~7.4 GB | ~10–20s | ✅ fallback |
 | 3 | HF Transformers bf16 | ~22 GB | ~15–30s | ✅ fallback |
 
@@ -113,16 +113,28 @@ The Triple-System separates *perceptual attention* (System 3, always-on CPU), *d
 | 6.3 | `--enable-prefix-caching` | TTFT cached | system prompt 383 tok KV cached |
 | 6.3 | IMG_SIZE 448→336 | 44% fewer vision tokens | ~0.6s prefill savings |
 | 6.3 | SWM window 4→2 + response compression | ~300 tok saved/turn | — |
-| **Total** | **HF bf16 ~45s → streaming speech 0.65s warm** | **69×** | **✅ 목표 달성** |
+| **6.4** | **Abbreviated action JSON keys (32 tok saved)** | **~2.2s** | **9.6s → 7.4s full inference** |
+| **6.4** | **`action_ready_cb` early body movement** | **~0.5s** | body moves 0.5s before JSON complete |
+| **Total** | **HF bf16 ~45s → full inference 7.4s** | **≥69×** | **✅ 목표 달성** |
 
-### Full Pipeline Timing (7/7 nodes, haru_all)
+### Full Pipeline Timing (7/7 nodes, haru_all, Phase 6.4)
 
 | Event | Time from trigger | Notes |
 |-------|------------------|-------|
-| speech (early, warm) | **0.65s** avg / 0.40s min | `_extract_speech_field` streaming |
-| expression (early, warm) | **1.32s** avg | `_extract_expression_id` streaming |
-| full inference (11-joint) | ~10s | 11 joints in action JSON |
+| speech (early, warm) | **~2.0s** avg | `_extract_speech_field` streaming |
+| expression (early, warm) | **~2.7s** avg | `_extract_expression_id` streaming |
+| **action (early, warm)** | **~7.9s** avg | `_extract_action_dict` streaming (new 6.4) |
+| full inference (11-joint abbreviated) | **~7.4s** avg | 73 tok action JSON vs old 105 tok |
 | TTS audio output | +400ms after speech field | edge-tts ko-KR-SunHiNeural |
+
+### Action JSON Format (Phase 6.4 abbreviated keys)
+
+```json
+{"speech":"...","emotion":"joy","expression_id":1,
+ "action":{"ht":2048,"hp":2057,"hr":2041,"rap":1738,"rsr":1525,"rep":2555,
+            "lap":790,"lsr":1552,"lep":1514,"rw":0,"lw":0},"duration":2.5}
+```
+Keys: `ht`=head_tilt `hp`=head_pan `hr`=head_roll | `rap`=r_arm_pitch `rsr`=r_shoulder_roll `rep`=r_elbow_pitch | `lap`=l_arm_pitch `lsr`=l_shoulder_roll `lep`=l_elbow_pitch | `rw`=right_wheel `lw`=left_wheel
 
 ### Starting the System
 
@@ -187,8 +199,9 @@ Gemma 4 Unified has **heterogeneous attention**:
 - **Native multimodal**: raw pixels + 16kHz audio in a single pass
 - **MindPower ToM**: 6-stage reasoning — Perception → Belief → Desire → Intention → Decision → Action
 - **Silence selection**: `speech: ""` → gesture-only response without speech
-- **Streaming early callbacks**: `speech_ready_cb` fires when speech field completes (~0.65s warm), `expression_ready_cb` fires for early face change (~1.32s warm)
+- **Streaming early callbacks**: `speech_ready_cb` (~2s warm), `expression_ready_cb` (~2.7s), `action_ready_cb` (~7.9s, body moves before JSON complete)
 - **Prefix caching**: `--enable-prefix-caching` — system prompt 383 tokens KV-cached, TTFT ~0.3s warm
+- **Abbreviated action keys**: 32 tokens saved vs verbose names — 9.6s→7.4s full inference
 - **Session memory**: SWM (window=2 pairs) persisted cross-session (`data/memory/swm_history.json`)
 - **Episodic LoRA**: PEFT adapter auto-loaded at startup from `data/adapters/`
 - **11-joint output**: all 9 position joints + 2 wheel drives in every inference response
@@ -221,19 +234,19 @@ Gemma 4 Unified has **heterogeneous attention**:
 
 ### Joint Map
 
-| Joint | ID | Range | Neutral |
-|-------|----|-------|---------|
-| r_arm_pitch | 3 | 1024–2451 | 1738 |
-| l_arm_pitch | 4 | 37–1542 | 790 |
-| r_shoulder_roll | 5 | 1000–2050 | 1525 |
-| r_elbow_pitch | 6 | 2047–3062 | 2555 |
-| l_shoulder_roll | 7 | 1047–2056 | 1552 |
-| l_elbow_pitch | 8 | 1021–2007 | 1514 |
-| head_pan | 10 | 1043–3071 | 2057 |
-| head_tilt | 11 | 1500–3086 | 2048 |
-| head_roll | 12 | 1630–2452 | 2041 |
-| right_wheel | 1 | −300–300 | 0 |
-| left_wheel | 2 | −300–300 | 0 |
+| Joint (abbr) | Full Name | ID | Range | Neutral |
+|-------------|-----------|-----|-------|---------|
+| **rap** | r_arm_pitch | 3 | 1024–2451 | 1738 |
+| **lap** | l_arm_pitch | 4 | 37–1542 | 790 |
+| **rsr** | r_shoulder_roll | 5 | 1000–2050 | 1525 |
+| **rep** | r_elbow_pitch | 6 | 2047–3062 | 2555 |
+| **lsr** | l_shoulder_roll | 7 | 1047–2056 | 1552 |
+| **lep** | l_elbow_pitch | 8 | 1021–2007 | 1514 |
+| **hp** | head_pan | 10 | 1043–3071 | 2057 |
+| **ht** | head_tilt | 11 | 1500–3086 | 2048 |
+| **hr** | head_roll | 12 | 1630–2452 | 2041 |
+| **rw** | right_wheel | 1 | −300–300 | 0 |
+| **lw** | left_wheel | 2 | −300–300 | 0 |
 
 ### Expression IDs
 
@@ -534,8 +547,9 @@ Each HITL episode step is stored as a compressed NumPy archive:
 | **Phase 5.8** | 추론 속도 가속 (2.8 tok/s → 19 tok/s, 7×) | ✅ **완료 2026-06-26** |
 | **Phase 6.1** | TTS 노드 (edge-tts ko-KR-SunHiNeural, 400ms, mpg123) | ✅ **완료 2026-06-26** |
 | **Phase 6.2** | 표정 디스플레이 노드 (pygame 8 emotions, haru_all 7/7) | ✅ **완료 2026-06-26** |
-| **Phase 6.3** | Streaming + prefix caching: speech 0.65s warm (69×) | ✅ **완료 2026-06-26** |
-| **Phase 6.4** | HITL 에피소드 수집 + 첫 LoRA 어댑터 | 🔄 **다음 단계** |
+| **Phase 6.3** | Streaming + prefix caching: speech ~2s warm (69×) | ✅ **완료 2026-06-26** |
+| **Phase 6.4** | action_ready_cb + 약어 키: full inference 9.6s→7.4s | ✅ **완료 2026-06-26** |
+| **Phase 6.5** | HITL 에피소드 수집 + 첫 LoRA 어댑터 (로봇 필요) | 🔄 **다음 단계** |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---
