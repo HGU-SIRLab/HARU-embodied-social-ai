@@ -1,5 +1,5 @@
 # Project HARU: Embodied Social AI Architecture
-> 최종 업데이트: 2026-06-25 | **Phase 5.7 완료** — vLLM 컨테이너 기반 Gemma4 서버 구축 + 비전(VLM) 지원 + brain_node 전체 통합 완료 (8/8 체크포인트 ✅) | 다음: 추론 속도 가속 (2.8 tok/s → 20+ tok/s)
+> 최종 업데이트: 2026-06-26 | **Phase 6.3 완료** — speech 0.65s warm (69×), 7/7 노드, 11관절 전체 출력, HITL 파이프라인 준비 완료 (97% 달성) | 다음: HITL 에피소드 수집 + 첫 LoRA 어댑터
 
 ---
 
@@ -385,55 +385,43 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 - **소스 수정 시 재빌드 불필요** (symlink이므로 즉시 반영)
 - 다른 패키지(haru_audio 등) 수정 시: `colcon build --symlink-install --packages-select <pkg>`
 
-### Phase 5.7 — vLLM 컨테이너 기반 Gemma4 서버 + 비전 통합 (2026-06-25 완료)
+### Phase 5.7~6.3 — 추론 가속 전체 경로 (완료 2026-06-26)
 
-#### 구성
-- **컨테이너**: `haru_vllm_server` (`vllm:r36.5.tegra-aarch64-cu126-22.04-vllm` 이미지)
-- **서버**: `scripts/gemma4_server.py` (FastAPI + uvicorn, OpenAI Vision API 호환, 포트 8000)
-- **모델**: `data/gemma4_autoround_w4a16/` (W4A16, 7.4GB, auto_round:tritonv2_zp 백엔드)
+#### 현재 추론 아키텍처
+- **서버**: vLLM 0.21.0 컨테이너, W4A16 AutoRound + Marlin INT4 GEMM + CUDAGraph
+- **모델**: `data/gemma4_autoround_w4a16/` (7.4GB) + `gemma4_mm_patch.py` (VisionEmbedder 패치)
+- **속도**: 19.3~19.6 tok/s (텍스트/비전 동일), 비전 포함 50-tok 응답 2.6s
 - **시작**: `bash scripts/run_vllm_server.sh`
 
-#### 핵심 구현
-- **비전 지원**: `AutoProcessor` (AutoTokenizer 대체) + `image_url` base64 디코딩 → PIL → `processor(text, images=images)`
-- **백엔드 패치**: `get_highest_priority_backend` monkey-patch로 broken gptqmodel 우회 → `auto_round:tritonv2_zp`
-- **직접 로드**: `Gemma4UnifiedForConditionalGeneration` + `convert_hf_model` + `post_init`
-- **brain_node 자동 연결**: `Gemma4TRTLLMInference.try_connect()` → True (포트 8000 응답 시)
+#### 체감 지연 최적화 (Phase 6.3)
+| 최적화 | 효과 |
+|-------|------|
+| `stream=True` + `_extract_speech_field` | speech 필드 완성 즉시 TTS 발행 (~0.65s warm) |
+| `_extract_expression_id` | expression_id 완성 즉시 표정 변경 (~1.32s warm) |
+| `--enable-prefix-caching` | 시스템 프롬프트 383 tok KV 캐시 (TTFT ~0.3s warm) |
+| IMG_SIZE 448→336 | 비전 토큰 44% 감소, 프리필 ~0.6s 단축 |
+| SWM window 4→2 + 응답 압축 | ~300 tok/턴 절약 |
+| **합계** | **HF bf16 ~45s → 0.65s warm = 69×** |
 
-#### 통합 테스트 결과 (2026-06-25, 8/8 ✅)
-| 단계 | 결과 |
-|------|------|
-| vLLM 컨테이너 서버 port 8000 응답 | ✅ |
-| Gemma4TRTLLMInference.try_connect() | ✅ True, 모델명 "gemma4" |
-| brain_node 자동 TRT-LLM 모드 선택 | ✅ |
-| /haru_vision/compressed 수신 | ✅ |
-| /haru_attention/event 트리거 처리 | ✅ |
-| 비전+텍스트 동시 추론 (이미지 포함) | ✅ |
-| /haru_speech 발행 (JSON 파싱 완료) | ✅ |
-| /haru_expression + /haru_vla_raw 발행 | ✅ expr=1 (joy), head=(2300,2057,2041) |
+#### haru_all 7/7 노드 (Phase 6.2+ 기준)
+```
+vision_node      (3Hz, 336×336 JPEG, 듀얼 카메라)
+attention_node   (5-State FSM, OpenCV 얼굴/모션/VAD, CPU)
+audio_node       (16kHz VAD, C270)
+brain_node       (Gemma 4 12B, 스트리밍, prefix caching)
+action_node      (50Hz Smoothstep, 11관절 전체 제어)
+tts_node         (edge-tts ko-KR-SunHiNeural, 400ms, mpg123 hw:3,0)
+expression_node  (pygame 800×600, 8감정, DISPLAY=:0)
+```
 
-실제 출력 예:
+#### 실제 출력 로그 예 (Phase 6.3 이후)
 ```
 [Brain] ✅ TRT-LLM 서버 연결 성공 — 고속 추론 모드 (W4A16 INT4)
-[Brain] [APPEARED] 64.8s | emotion=joy | speech="어머, 안녕하세요! 당신이 나타나니 정말 기뻐요."
+[Brain] [STREAM] speech 조기 발행: '안녕하세요! 저와 함께 시간을 보낼 준비가 되셨나요?'
+[Brain] [STREAM] expression 조기 발행: 1
+[Brain] [face_detected] 10.5s | emotion=joy | speech="안녕하세요! 저와..."
+[Pub] expr=1 speech='안녕하세요! 저와 함께 시간을...' head=(2100,2057,2041) r_arm=1738/1525/2555 l_arm=790/1552/1514 wheel=(0,0)
 ```
-
-#### 현재 속도 현황 & 병목
-- **현재**: 2.8 tok/s ≈ 64.8s (100-150 토큰 응답 기준)
-- **목표**: 20+ tok/s ≈ 5s
-- **병목 원인**: 모든 가용 백엔드(tritonv2_zp, torch_zp)가 SW 디퀀타이즈 후 분리 GEMM → SM87에서 bf16 기준선과 동일 속도
-- **막힌 경로들**:
-  - vLLM 공식 엔진: Marlin kernel shape mismatch (`a.size(1)=4096, size_k=8192`) — Gemma 4 이종 어텐션 비호환
-  - gptqmodel 2.2.0: transformers 5.12.1 API 불일치 (AutoModelForVision2Seq 삭제됨) → 제거
-  - auto-gptq: Jetson PyPI 메타데이터 버전 불일치 → pip 거부
-  - torch.compile: Triton 커널 트레이싱 IndexError → 제거
-- **다음 단계 (Phase 5.8)**: 퓨즈드 디퀀타이즈+GEMM 경로 확보 필요 (SM87 전용 커널 or exllamav2 시도)
-
-### TensorRT-LLM 빌드 진행 중 (2026-06-23)
-- TRT-LLM 1.2.1: `Gemma4ForConditionalGeneration` 공식 지원 확인 (jetson-containers)
-- jetson-containers 의존성: ffmpeg:8.1로 업데이트 완료 (git pull 2026-06-23)
-- Docker 빌드: `scripts/build_trtllm_docker.sh` 실행 중 (백그라운드, ~8-16시간)
-- 완료 후: `scripts/convert_gemma4_trtllm.sh` → `scripts/run_trtllm_server.sh` 순서
-- brain_node.py가 포트 8000 서버 자동 감지 → 최속 경로 선택
 
 ### 현재 워크스페이스 구조
 ```
@@ -458,23 +446,30 @@ robot_brain_workspace/
 │   ├── trtllm/engine/         ← TRT-LLM 엔진 (빌드 완료 후 생성)
 │   └── trtllm/visual_engine/  ← TRT-LLM 비전 인코더
 ├── src/
-│   ├── haru_vision/           ← 카메라 노드 (듀얼, 3Hz, 896×448 JPEG)
+│   ├── haru_vision/           ← 카메라 노드 (듀얼, 3Hz, 336×336 JPEG, Phase 6.3: IMG 축소)
 │   ├── haru_audio/            ← 마이크 노드 (VAD, 16kHz, C270)
 │   ├── haru_attention/        ← System 3: 주의 노드 (Phase 5.5)
-│   │   └── attention_node.py  ← 얼굴감지 + 5-State FSM + VAD통합
+│   │   └── attention_node.py  ← 얼굴감지 + 5-State FSM + VAD통합 + 0.3s 노이즈 필터
 │   ├── haru_brain/            ← System 2 (Gemma 4 12B)
-│   │   ├── brain_node.py                  ← 3-tier 자동 선택 (TRT-LLM→AutoRound→HF)
-│   │   ├── gemma4_inference.py            ← HF bf16 기본 경로
-│   │   ├── gemma4_trtllm_inference.py     ← TRT-LLM 고속 경로
-│   │   ├── gemma4_autoround_inference.py  ← auto_round W4A16 중속 경로 ✅
-│   │   ├── tom_prompt.py          ← 침묵 규칙 + 상황 컨텍스트
+│   │   ├── brain_node.py                  ← 스트리밍 콜백 + 조기 발행 + 11관절 로그
+│   │   ├── gemma4_inference.py            ← HF bf16 기본 경로 (**kwargs 추가)
+│   │   ├── gemma4_trtllm_inference.py     ← vLLM 고속 경로 ★ (streaming, speech/expr 콜백)
+│   │   ├── gemma4_autoround_inference.py  ← auto_round W4A16 중속 경로 (**kwargs 추가)
+│   │   ├── tom_prompt.py          ← 11관절 전체 + SWM window=2 + 응답 압축
 │   │   ├── session_memory.py
 │   │   └── adapter_manager.py
-│   ├── haru_action/           ← System 1 (50Hz Smoothstep)
+│   ├── haru_action/           ← System 1 (50Hz Smoothstep, 9관절+2바퀴)
+│   ├── haru_tts/              ← TTS 노드 (edge-tts ko-KR, Phase 6.1 신규) ★
+│   ├── haru_expression/       ← 표정 디스플레이 (pygame 8감정, Phase 6.2 신규) ★
 │   └── haru_logger/           ← HITL 로거 (attention_source/context 저장)
+├── scripts/
+│   ├── gemma4_mm_patch.py     ← Gemma4UnifiedVisionEmbedder 패치 (Phase 5.8) ★
+│   ├── vllm_serve_cmd.sh      ← vLLM serve 명령 (--enable-prefix-caching 포함)
+│   ├── train_lora.py          ← QLoRA (11관절 _ALL_JOINTS 학습 타겟)
+│   └── ...
 ├── torch-2.5.0a0+...nv24.08...whl  ← Jetson 전용 torch wheel (사용됨)
-├── launch_vla.sh              ← 실행 스크립트
-├── README.md                  ← 영문 전체 가이드 (Phase 5.6 업데이트)
+├── launch_vla.sh              ← 실행 스크립트 (7-node all / hitl / brain 등)
+├── README.md                  ← 영문 전체 가이드 (Phase 6.3 업데이트)
 ├── HARU_PROJECT_CONTEXT.md    ← 이 파일
 ├── HARU_RESEARCH_GOALS.txt
 └── HARU_RUN_COMMANDS.txt

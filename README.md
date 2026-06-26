@@ -4,8 +4,9 @@
   <img src="https://img.shields.io/badge/ROS2-Humble-blue" />
   <img src="https://img.shields.io/badge/Jetson-AGX_Orin_64GB-green" />
   <img src="https://img.shields.io/badge/Model-Gemma_4_12B-orange" />
-  <img src="https://img.shields.io/badge/Phase-5.7_(완료)-purple" />
-  <img src="https://img.shields.io/badge/Inference-vLLM_Container_Server-red" />
+  <img src="https://img.shields.io/badge/Phase-6.3_(완료)-purple" />
+  <img src="https://img.shields.io/badge/Inference-vLLM_W4A16_19tok%2Fs-red" />
+  <img src="https://img.shields.io/badge/Speech-0.65s_warm_(69×)-brightgreen" />
 </p>
 
 **Author:** Cho Hyeongmin (조형민) | Handong Global University, SIRLab  
@@ -93,36 +94,60 @@ The Triple-System separates *perceptual attention* (System 3, always-on CPU), *d
 
 ---
 
-## Phase 5.7 — vLLM Container-Based Gemma4 VLM Server + brain_node Integration ✅ (2026-06-25)
+## Phase 6.3 — Streaming Inference + Prefix Caching: 69× Speedup ✅ (2026-06-26)
 
 ### Current Inference Architecture
 
 | Tier | Method | Size | Latency | Status |
 |------|--------|------|---------|--------|
-| **1 (Active)** | **vLLM container server (port 8000)** | **~7.4 GB** | **2.8 tok/s ≈ 64s (target: 20+ tok/s ≈ 5s)** | **✅ Running** |
-| 2 | auto_round W4A16 direct load | ~7.4 GB | ~10–20s | ✅ 완료 (2026-06-23) |
-| 3 | HF Transformers bf16 | ~22 GB | ~15–30s | ✅ 항상 사용 가능 |
+| **1 (Active)** | **vLLM W4A16 + Marlin INT4 + CUDAGraph** | **~7.4 GB** | **19 tok/s · speech 0.65s warm** | **✅ Running** |
+| 2 | auto_round W4A16 direct load | ~7.4 GB | ~10–20s | ✅ fallback |
+| 3 | HF Transformers bf16 | ~22 GB | ~15–30s | ✅ fallback |
 
-`brain_node.py`는 시작 시 port 8000을 먼저 감지하여 vLLM 컨테이너 서버를 자동 선택합니다.
+**Key optimizations (cumulative):**
 
-### Starting the Inference Server
+| Phase | Optimization | Speedup | Result |
+|-------|-------------|---------|--------|
+| 5.8 | vLLM W4A16 Marlin INT4 + CUDAGraph | 7× tok/s | 2.8 → 19 tok/s |
+| 6.3 | Streaming `_extract_speech_field` | early speech | speech 0.65s warm (cold 2.65s) |
+| 6.3 | `--enable-prefix-caching` | TTFT cached | system prompt 383 tok KV cached |
+| 6.3 | IMG_SIZE 448→336 | 44% fewer vision tokens | ~0.6s prefill savings |
+| 6.3 | SWM window 4→2 + response compression | ~300 tok saved/turn | — |
+| **Total** | **HF bf16 ~45s → streaming speech 0.65s warm** | **69×** | **✅ 목표 달성** |
+
+### Full Pipeline Timing (7/7 nodes, haru_all)
+
+| Event | Time from trigger | Notes |
+|-------|------------------|-------|
+| speech (early, warm) | **0.65s** avg / 0.40s min | `_extract_speech_field` streaming |
+| expression (early, warm) | **1.32s** avg | `_extract_expression_id` streaming |
+| full inference (11-joint) | ~10s | 11 joints in action JSON |
+| TTS audio output | +400ms after speech field | edge-tts ko-KR-SunHiNeural |
+
+### Starting the System
 
 ```bash
-# Start vLLM container server (background)
+# Step 1: Start vLLM inference server (once, stays up)
 bash scripts/run_vllm_server.sh
+# Verify: curl http://localhost:8000/v1/models
 
-# Verify
-curl http://localhost:8000/v1/models
+# Step 2: Start all 7 nodes
+bash launch_vla.sh
 ```
 
-### Vision Support
+### haru_all — 7-Node Pipeline (Phase 6.2+)
 
-Gemma 4 is a VLM — vision was mandatory from the start. `gemma4_server.py` handles images via:
-- **`AutoProcessor`** (replacing `AutoTokenizer`) — processes image+text jointly
-- **`image_url` base64 decoding** → PIL Image → `processor(text=..., images=images)`
-- Full OpenAI Vision API format: `{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}`
+```
+vision_node      — 3Hz dual-cam 336×336 JPEG
+attention_node   — 5-State FSM, face/motion/VAD
+audio_node       — 16kHz VAD
+brain_node       — Gemma 4 12B, streaming, prefix caching
+action_node      — 50Hz Smoothstep, 9 joints + 2 wheels
+tts_node         — edge-tts ko-KR, 400ms, mpg123 hw:3,0
+expression_node  — pygame 800×600, 8 emotions, DISPLAY=:0
+```
 
-### Integration Test Results (8/8 ✅, 2026-06-25)
+### Phase 5.7 Integration Test Results (8/8 ✅, 2026-06-25)
 
 | Checkpoint | Result |
 |-----------|--------|
@@ -134,18 +159,6 @@ Gemma 4 is a VLM — vision was mandatory from the start. `gemma4_server.py` han
 | Vision + text joint inference | ✅ |
 | `/haru_speech` publish | ✅ "어머, 안녕하세요! 당신이 나타나니 정말 기뻐요." |
 | `/haru_expression` + `/haru_vla_raw` publish | ✅ expr=1 (joy), head=(2300,2057,2041) |
-
-### Speed Bottleneck & Phase 5.8 Plan
-
-**Current**: 2.8 tok/s ≈ 64.8s/response — all available backends (tritonv2_zp, torch_zp) perform software dequantize + separate GEMM with no speedup over bf16 baseline on SM87.
-
-**Blocked paths**:
-- vLLM official Marlin kernel: shape mismatch (`a.size(1)=4096, size_k=8192`) — Gemma 4 heterogeneous attention incompatible
-- gptqmodel 2.2.0: transformers 5.12.1 API mismatch (`AutoModelForVision2Seq` removed) → uninstalled
-- auto-gptq: Jetson PyPI metadata version mismatch → pip rejects
-- torch.compile: IndexError in Triton kernel tracing → removed
-
-**Phase 5.8 target**: 20+ tok/s ≈ 5s — requires fused dequantize+GEMM kernel path (SM87-compatible)
 
 ### auto_round W4A16 Key Technical Notes
 
@@ -174,8 +187,11 @@ Gemma 4 Unified has **heterogeneous attention**:
 - **Native multimodal**: raw pixels + 16kHz audio in a single pass
 - **MindPower ToM**: 6-stage reasoning — Perception → Belief → Desire → Intention → Decision → Action
 - **Silence selection**: `speech: ""` → gesture-only response without speech
-- **Session memory**: conversation history persisted across sessions (`data/memory/swm_history.json`)
+- **Streaming early callbacks**: `speech_ready_cb` fires when speech field completes (~0.65s warm), `expression_ready_cb` fires for early face change (~1.32s warm)
+- **Prefix caching**: `--enable-prefix-caching` — system prompt 383 tokens KV-cached, TTFT ~0.3s warm
+- **Session memory**: SWM (window=2 pairs) persisted cross-session (`data/memory/swm_history.json`)
 - **Episodic LoRA**: PEFT adapter auto-loaded at startup from `data/adapters/`
+- **11-joint output**: all 9 position joints + 2 wheel drives in every inference response
 
 ### System 1 — haru_action
 - **50Hz control loop** with Smoothstep (`3t² − 2t³`) interpolation
@@ -515,8 +531,11 @@ Each HITL episode step is stored as a compressed NumPy archive:
 | **Phase 5.5** | **Triple-System**: haru_attention + 이벤트 드리븐 | ✅ 완료 2026-06-22 |
 | **Phase 5.6** | GPU 복구 + auto_round W4A16 + TRT-LLM 경로 | ✅ **완료 2026-06-23** |
 | **Phase 5.7** | vLLM 컨테이너 VLM 서버 + 비전 지원 + brain_node 통합 | ✅ **완료 2026-06-25** |
-| **Phase 5.8** | 추론 속도 가속 (2.8 tok/s → 20+ tok/s, 64s → 5s) | 🔄 **다음 단계** |
-| **Phase 6** | Piper TTS + 표정 디스플레이 노드 | ⬜ 미착수 |
+| **Phase 5.8** | 추론 속도 가속 (2.8 tok/s → 19 tok/s, 7×) | ✅ **완료 2026-06-26** |
+| **Phase 6.1** | TTS 노드 (edge-tts ko-KR-SunHiNeural, 400ms, mpg123) | ✅ **완료 2026-06-26** |
+| **Phase 6.2** | 표정 디스플레이 노드 (pygame 8 emotions, haru_all 7/7) | ✅ **완료 2026-06-26** |
+| **Phase 6.3** | Streaming + prefix caching: speech 0.65s warm (69×) | ✅ **완료 2026-06-26** |
+| **Phase 6.4** | HITL 에피소드 수집 + 첫 LoRA 어댑터 | 🔄 **다음 단계** |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---
@@ -539,12 +558,11 @@ Each HITL episode step is stored as a compressed NumPy archive:
 
 | Limitation | Status | Plan |
 |------------|--------|------|
-| 2.8 tok/s ≈ 64s inference | Known | Phase 5.8: fused dequant+GEMM kernel (target: 5s) |
-| No TTS output | `/haru_speech` topic ready | Piper TTS — **Phase 6** |
-| No expression display | `/haru_expression` topic ready | LED/OLED node — **Phase 6** |
-| No episodes collected yet | Pipeline ready | First HITL session needed |
-| Single adapter (no routing) | Latest adapter only | S-LoRA (Phase 6+) |
-| SFT only | HITL-SFT | DPO after sufficient data |
+| No HITL episodes collected yet | Pipeline fully ready | First HITL session (robot present) |
+| ARM joints at neutral (base model) | Expected | LoRA fine-tuning after HITL collection |
+| SFT only | HITL-SFT ready | DPO after 50+ episodes |
+| Single adapter (no routing) | Latest adapter only | S-LoRA (Phase 7+) |
+| Warm cache 0.65s only when SWM empty | SWM sliding window invalidates prefix | 2–3s speech typical with SWM history |
 
 ---
 
