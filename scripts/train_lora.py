@@ -81,15 +81,22 @@ def load_episodes(episodes_dir: Path) -> list[dict]:
     return samples
 
 
+# inference prompt (tom_prompt.py)와 동일한 5관절만 학습 타겟에 포함
+# 추론 시 나머지 관절은 _parse_response에서 중립값으로 보완
+_TRAIN_JOINTS = ['head_tilt', 'head_pan', 'head_roll', 'r_arm_pitch', 'l_arm_pitch']
+
+
 def _build_target_json(sample: dict) -> str:
-    """샘플 → 모델이 생성해야 할 JSON 문자열."""
+    """샘플 → 모델이 생성해야 할 JSON 문자열 (inference 포맷과 동일)."""
     action_dict = normalized_to_action(sample['action'])
-    expr_id = int(np.clip(round(action_dict.pop('expression_id', 0)), 0, 7))
+    expr_id = int(np.clip(round(action_dict.get('expression_id', 0)), 0, 7))
+    # 5관절만 포함 (system prompt 예시와 동일한 포맷)
+    action_5 = {k: round(action_dict[k], 1) for k in _TRAIN_JOINTS if k in action_dict}
     return json.dumps({
         'speech':        sample['speech'],
         'emotion':       sample['emotion'],
         'expression_id': expr_id,
-        'action':        {k: round(v, 1) for k, v in action_dict.items()},
+        'action':        action_5,
         'duration':      2.5,
     }, ensure_ascii=False)
 
