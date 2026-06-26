@@ -103,7 +103,6 @@ def _build_target_json(sample: dict) -> str:
         'emotion':       sample['emotion'],
         'expression_id': expr_id,
         'action':        action_abbrev,
-        'duration':      2.5,
     }, ensure_ascii=False)
 
 
