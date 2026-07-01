@@ -627,11 +627,11 @@ Each HITL episode step is stored as a compressed NumPy archive:
 [1] Google DeepMind. **"Gemma 4 Model Card & Documentation."** 2025.
 [[Docs]](https://ai.google.dev/gemma/docs/core/model_card_4)
 
-[2] Zhu, L., et al. **"Social World Models (S³AP): Structured Representations for Social Reasoning."** *arXiv:2502.11881*, 2025.
-[[Paper]](https://arxiv.org/abs/2502.11881)
+[2] Zhou, X., Liu, J., Yerukola, A., Kim, H., & Sap, M. **"Social World Models."** *arXiv:2509.00559*, 2025.
+[[Paper]](https://arxiv.org/abs/2509.00559)
 
-[3] Goyal, A., Bengio, Y., et al. **"System 0/1/2/3: Quad-process theory of the Social Mind."** *arXiv:2402.01364*, 2024.
-[[Paper]](https://arxiv.org/abs/2402.01364)
+[3] Taniguchi, T., Hirai, Y., Suzuki, M., Murata, S., Horii, T., & Tanaka, K. **"System 0/1/2/3: Quad-Process Theory for Multitimescale Embodied Collective Cognitive Systems."** *arXiv:2503.06138*, 2025.
+[[Paper]](https://arxiv.org/abs/2503.06138)
 
 ### 📉 Quantization & Model Compression
 
@@ -674,8 +674,8 @@ Each HITL episode step is stored as a compressed NumPy archive:
 [14] Octo Model Team. **"Octo: An Open-Source Generalist Robot Policy."** *RSS*, 2024.
 [[Project]](https://octo-models.github.io)
 
-[15] et al. **"PACT: Credit Assignment in Intervention Trajectories."** *arXiv:2502.05450*, 2025.
-[[Paper]](https://arxiv.org/abs/2502.05450)
+[15] Liu, Z., Liu, G., Qu, Y., Xue, Y., Jia, B., Yang, C., Gui, W., Huang, K., & Wang, Z. **"Preference-Calibrated Human-in-the-Loop Reinforcement Learning for Robotic Manipulation."** *arXiv:2606.03949*, 2025.
+[[Paper]](https://arxiv.org/abs/2606.03949)
 
-[16] et al. **"HILT: Few-Shot Preference-based Reinforcement Learning."** *arXiv:2301.12314*, 2023.
-[[Paper]](https://arxiv.org/abs/2301.12314)
+[16] Hejna, J., & Sadigh, D. **"Few-Shot Preference Learning for Human-in-the-Loop RL."** *CoRL*, 2022.
+[[Paper]](https://arxiv.org/abs/2212.03363)
