@@ -622,11 +622,33 @@ Each HITL episode step is stored as a compressed NumPy archive:
 
 ## References
 
-1. Kahneman, D. *Thinking, Fast and Slow.* Farrar, Straus and Giroux, 2011.
-2. Google DeepMind. **"Gemma 4 Technical Report."** (2026).
-3. Hu, E., et al. **"LoRA: Low-Rank Adaptation of Large Language Models."** ICLR 2022.
-4. Dettmers, T., et al. **"QLoRA: Efficient Finetuning of Quantized LLMs."** NeurIPS 2023.
-5. Chi, C., et al. **"Diffusion Policy: Visuomotor Policy Learning via Action Diffusion."** RSS 2023.
-6. Zhao, T., et al. **"Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware (ACT)."** RSS 2023.
-7. Kim, M. J., et al. **"OpenVLA: An Open-Source Vision-Language-Action Model."** arXiv:2406.09246 (2024).
-8. Intel. **"AutoRound: Sign-Gradient-Descent-based Weight-Only Quantization."** (2024).
+### 🤖 Core Language Models & Social Intelligence
+
+- **Gemma 4 Model Card & Documentation** — 프로젝트의 두뇌 역할을 하는 Gemma 4 모델의 공식 명세서
+- **Social World Models (S³AP)** — 자유 형식의 서사를 구조화된 사회적 상태(S³AP)로 변환하여 로봇의 사회적 추론 능력을 향상시키는 프레임워크
+- **System 0/1/2/3: Quad-process theory** — 초고속 센서모터 루프(System 0)부터 저속의 집단 지성(System 3)까지 아우르는 인지 시스템 설계 이론
+
+### 📉 Quantization & Compression (Efficiency)
+
+- **AutoRound (SignRound)** — HARU 모델을 지능 손실 없이 4비트로 압축하기 위해 사용된 가중치 라운딩 최적화 알고리즘
+- **GPTQ: Accurate Post-Training Quantization** — 대형 언어 모델을 단일 GPU에서 실행 가능하게 만든 4비트 양자화의 수학적 토대
+- **AWQ: Activation-aware Weight Quantization** — 가중치뿐만 아니라 활성화 값을 고려하여 엣지 디바이스에서 3-4배의 성능 향상을 제공하는 양자화 기법
+- **SliderQuant: Accurate PTQ for LLMs** — 각 레이어별 양자화 민감도를 고려하여 압축 오차를 획기적으로 줄이는 최신 양자화 프레임워크
+
+### ⚡ Inference Kernels & Serving Optimization
+
+- **Marlin: Mixed-Precision Inference Kernel** — HARU의 추론 속도를 초당 19개 토큰으로 7배 이상 가속화한 핵심 INT4 전용 커널
+- **PagedAttention (vLLM)** — 가상 메모리 관리 기법을 응용하여 KV 캐시 메모리 낭비를 줄이고 처리량을 높인 서빙 엔진
+- **BFloat16: The secret to high performance** — 딥러닝 연산의 수치적 안정성과 하드웨어 효율성을 보장하는 BF16 포맷에 관한 기술 가이드
+- **NVIDIA CUDA Graphs** — GPU 연산 실행 오버헤드를 최소화하기 위한 그래프 기반 실행 최적화 기술
+
+### 🧠 Fine-tuning & Continual Learning
+
+- **LoRA: Low-Rank Adaptation of LLMs** — 최소한의 파라미터 업데이트로 모델을 특정 작업에 맞춰 최적화하는 저위수 적응 기술
+- **Dynamic Orthogonal Continual Fine-tuning (DOC)** — 새로운 지식을 배울 때 기존의 지식을 잊어버리는 '치명적 망각' 문제를 해결하기 위한 동적 직교 미세 조정 기법
+
+### 🦾 Robotics & Human-in-the-Loop RL
+
+- **OCTO: Open-Source Foundation Model for Robotics** — 다양한 로봇 하드웨어에서 즉시 사용 가능한 멀티모달 로봇 파운데이션 모델 및 훈련 파이프라인
+- **HILT: Few-Shot Preference-based RL** — 사용자의 선호도를 기반으로 로봇의 행동을 소량의 데이터만으로 빠르게 튜닝하는 강화학습 알고리즘
+- **PACT: Credit assignment in Intervention trajectories** — 사람이 개입한 궤적에서 보상을 정확히 재분배하여 모델의 학습 효율을 높이는 기술
