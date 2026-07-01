@@ -644,8 +644,8 @@ Each HITL episode step is stored as a compressed NumPy archive:
 [6] Lin, J., Tang, J., Tang, H., Yang, S., Dang, X., & Han, S. **"AWQ: Activation-aware Weight Quantization for On-Device LLM Compression and Acceleration."** *MLSys*, 2024.
 [[Code]](https://github.com/mit-han-lab/llm-awq)
 
-[7] et al. **"SliderQuant: Accurate Post-Training Quantization for LLMs."**
-[[Code]](https://github.com/deep-optimization/SliderQuant)
+[7] Wang, S., Li, C., Kang, Y., Fan, J., Ou, Z., & Yao, A. **"SliderQuant: Accurate Post-Training Quantization for LLMs."** *ICLR*, 2026.
+[[Paper]](https://arxiv.org/abs/2603.25284) [[Code]](https://github.com/deep-optimization/SliderQuant)
 
 ### ⚡ Hardware & Inference Optimization
 
