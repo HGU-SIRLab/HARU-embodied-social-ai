@@ -298,8 +298,9 @@ class HaruHITLNode(Node):
         corrected_speech = new_speech if new_speech else speech
 
         # ── 관절 교정 ─────────────────────────────────────────────
+        kinesthetic_ok = True
         if method == 'D':
-            self._kinesthetic_capture(corrected_action)
+            kinesthetic_ok = self._kinesthetic_capture(corrected_action)
         else:
             print(f'\n  {LINE[:30]}')
             print('  관절 값 입력 (Enter = 현재값 유지)')
@@ -333,13 +334,13 @@ class HaruHITLNode(Node):
         corrected_cmd['speech']        = corrected_speech
 
         self._publish_command(corrected_cmd)
-        self._log_step(cmd, corrected_cmd, is_corrected=True)
+        self._log_step(cmd, corrected_cmd, is_corrected=(method == 'M' or kinesthetic_ok))
         self._pending = None
         self._state = 'IDLE'
         print(f'[OK] 교정 완료 — 스텝 {self._writer.current_step - 1} 저장됨\n')
         sys.stdout.flush()
 
-    def _kinesthetic_capture(self, corrected_action: dict):
+    def _kinesthetic_capture(self, corrected_action: dict) -> bool:
         """토크 OFF → 사용자가 로봇을 직접 조작 → Enter → 인코더 값 캡처."""
         torque_msg = Bool()
 
@@ -370,9 +371,9 @@ class HaruHITLNode(Node):
 
         if joints is None:
             print('  [경고] 관절 위치 수신 실패 (action_node가 실행 중인지 확인).')
-            print('         현재 제안값을 유지합니다.')
+            print('         VLA 제안값을 유지하고 교정 없음(is_corrected=False)으로 기록합니다.')
             sys.stdout.flush()
-            return
+            return False
 
         for name in POSITION_JOINT_ORDER:
             corrected_action[name] = joints[name]
@@ -388,6 +389,7 @@ class HaruHITLNode(Node):
               f'  shoulder={joints["lsr"]:.0f}'
               f'  elbow={joints["lep"]:.0f}')
         sys.stdout.flush()
+        return True
 
     # ── 입력 헬퍼 ────────────────────────────────────────────────
 
