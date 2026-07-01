@@ -1,7 +1,7 @@
 ================================================================
 HARU 실행 명령어 & 운용 가이드
 System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B VLM (19 tok/s) | System 1: haru_action (50Hz)
-최종 업데이트: 2026-06-26 (Phase 6.3 완료: speech 0.65s warm, 69×, prefix caching ✅ | 7/7 노드 haru_all | 11관절 전체 출력)
+최종 업데이트: 2026-07-01 (Phase 6.5.5 완료: Robot-display-HRI 14감정 FULLSCREEN 통합 | AI-only 표정 제어 | 7/7 노드 haru_all)
 ================================================================
 
 
@@ -16,12 +16,19 @@ System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B VLM (19 t
 [ 1. 실행 모드 선택 ]
 ================================================================
 
-■ 일반 운용 모드 (Triple-System 전체, 7노드) ← Phase 6.2+ 기준
+■ 일반 운용 모드 (Triple-System 전체, 7노드) ← Phase 6.5.5+ 기준
   bash launch_vla.sh
   (내부 7개 노드: vision + attention + audio + brain + action + tts + expression)
 
-  추론 서버가 먼저 실행되어 있어야 함:
+  ⚠️ 중요: 추론 서버가 먼저 실행되어 있어야 함 (brain_node가 자동 연결)
     bash scripts/run_vllm_server.sh  # 포트 8000, 백그라운드 유지
+    curl http://localhost:8000/v1/models  # 준비 확인 후 haru-all 실행
+
+  expression_node (Phase 6.5.5): Robot-display-HRI anime 얼굴 (FULLSCREEN 1024×600)
+    출처: https://github.com/HGU-SIRLab/Robot-display-HRI
+    - /haru_expression (Int32) → EMOTION_MAP → emotion_queue → pygame 렌더러
+    - 키보드/마우스/30초 타임아웃 제거 — AI가 감정 전적으로 제어
+    - 감정 매핑: 0→NEUTRAL, 1→HAPPY, 2→SAD, 3→THINKING, 4→SURPRISED, 5→TENDER, 7→SCARED
 
 ■ HITL 데이터 수집 모드
   bash launch_vla.sh hitl
@@ -593,6 +600,37 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
   haru_brain  : setuptools 81.0.0 호환 수동 install 구조 생성 완료
   haru_attn   : 수동 install 구조 신규 생성 완료
                 (소스 심볼릭 링크 → 소스 수정 즉시 반영)
+
+================================================================
+[ 2026-07-01 Phase 6.5.5 완료 — 변경 이력 ]
+================================================================
+
+  [Phase 6.5.5 — Robot-display-HRI pygame 얼굴 통합]
+  expression_node.py : 완전 교체 — FaceRenderer(기하학 도형) 제거
+                       → Robot-display-HRI 래퍼 (emotion_queue → run_face_app)
+                       출처: https://github.com/HGU-SIRLab/Robot-display-HRI
+  robot_face/        : Robot-display-HRI 소스 (src/haru_expression/haru_expression/robot_face/)
+    main.py            : RobotFaceApp — 풀스크린 1024×600 (pygame.FULLSCREEN | NOFRAME)
+                         키보드 핸들러 제거 (key_map 0-9/Q-Y 제거)
+                         마우스 클릭 이스터에그 제거 (트리플클릭 ANGRY)
+                         30초 자동 복귀 타이머 제거 (emotion_timer_start_time 제거)
+                         USEREVENT+1 (동공 이동), USEREVENT+2 (눈깜빡임) 유지
+                         SCANNING/LISTENING 동공 모드 유지
+    common_helpers.py  : 색상·그라디언트 헬퍼 (WHITE, PINK, START_BLUE, …)
+    emotions/          : 14 감정 모듈 (neutral/happy/excited/tender/scared/angry/sad/
+                         surprised/listening/thinking/close/scanning/sleepy/wake)
+  robot_face/__init__.py : 패키지 마커 (빈 파일)
+
+  [EMOTION_MAP (brain Int32 → pygame 문자열 키)]
+  0→NEUTRAL, 1→HAPPY, 2→SAD, 3→THINKING, 4→SURPRISED, 5→TENDER, 6→THINKING, 7→SCARED
+
+  [symlink install 대응]
+  os.path.realpath(__file__) 사용 → install/ symlink를 추적해 src/ 경로 확인
+  sys.path.insert(0, robot_face_dir) 후 from main import run_face_app
+
+  [통합 테스트 결과 (2026-07-01)]
+  vLLM 서버 없이 haru-all: HF fallback → 7/7 노드, 10 토픽, 얼굴 화면 확인
+  vLLM 서버 포함 haru-all: ✅ TRT-LLM 서버 연결 성공, FULLSCREEN 확인
 
 ================================================================
 [ 2026-06-26 Phase 5.8 / 6.1 / 6.2 / 6.3 완료 — 변경 이력 ]

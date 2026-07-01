@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/ROS2-Humble-blue" />
   <img src="https://img.shields.io/badge/Jetson-AGX_Orin_64GB-green" />
   <img src="https://img.shields.io/badge/Model-Gemma_4_12B-orange" />
-  <img src="https://img.shields.io/badge/Phase-6.3_(완료)-purple" />
+  <img src="https://img.shields.io/badge/Phase-6.5.5_(완료)-purple" />
   <img src="https://img.shields.io/badge/Inference-vLLM_W4A16_19tok%2Fs-red" />
   <img src="https://img.shields.io/badge/Speech-0.65s_warm_(69×)-brightgreen" />
 </p>
@@ -156,7 +156,7 @@ audio_node       — 16kHz VAD
 brain_node       — Gemma 4 12B, streaming, prefix caching
 action_node      — 50Hz Smoothstep, 9 joints + 2 wheels
 tts_node         — edge-tts ko-KR, 400ms, mpg123 hw:3,0
-expression_node  — pygame 800×600, 8 emotions, DISPLAY=:0
+expression_node  — Robot-display-HRI pygame FULLSCREEN, 14 emotions, DISPLAY=:0
 ```
 
 ### Phase 5.7 Integration Test Results (8/8 ✅, 2026-06-25)
@@ -250,12 +250,20 @@ Gemma 4 Unified has **heterogeneous attention**:
 
 ### Expression IDs
 
-| ID | Expression | ID | Expression |
-|----|------------|----|------------|
-| 0 | neutral | 4 | surprise |
-| 1 | joy | 5 | empathy |
-| 2 | sadness | 6 | thinking |
-| 3 | curiosity | 7 | concern |
+HARU uses **Robot-display-HRI** (https://github.com/HGU-SIRLab/Robot-display-HRI) as the pygame face renderer — 14 anime-style emotions, fullscreen 1024×600.
+
+| HARU ID | Brain emotion | Robot-display-HRI key |
+|---------|--------------|----------------------|
+| 0 | neutral | NEUTRAL |
+| 1 | joy | HAPPY |
+| 2 | sadness | SAD |
+| 3 | curiosity | THINKING |
+| 4 | surprise | SURPRISED |
+| 5 | empathy | TENDER |
+| 6 | thinking | THINKING |
+| 7 | concern | SCARED |
+
+Additional renderer-internal emotions (not mapped from brain output): `EXCITED`, `ANGRY`, `LISTENING`, `CLOSE`, `SCANNING`, `SLEEPY`, `WAKE`
 
 ---
 
@@ -461,6 +469,15 @@ robot_brain_workspace/
 │   │   └── haru_audio/audio_node.py
 │   ├── haru_action/              # System 1 — 50Hz motor control
 │   │   └── haru_action/action_node.py
+│   ├── haru_tts/                 # TTS node (edge-tts ko-KR, Phase 6.1)
+│   │   └── haru_tts/tts_node.py
+│   ├── haru_expression/          # Expression display node (Phase 6.5.5)
+│   │   └── haru_expression/
+│   │       ├── expression_node.py     # ROS2 wrapper: /haru_expression → emotion_queue
+│   │       └── robot_face/            # Robot-display-HRI source (https://github.com/HGU-SIRLab/Robot-display-HRI)
+│   │           ├── main.py            # RobotFaceApp + run_face_app(), FULLSCREEN 1024×600
+│   │           ├── common_helpers.py  # Colors, gradient drawing helpers
+│   │           └── emotions/          # 14 emotion modules (neutral/happy/sad/…)
 │   └── haru_logger/              # HITL episode logger
 │       └── haru_logger/
 │           ├── hitl_node.py          # Interactive correction UI (FSM state display)
@@ -549,7 +566,9 @@ Each HITL episode step is stored as a compressed NumPy archive:
 | **Phase 6.2** | 표정 디스플레이 노드 (pygame 8 emotions, haru_all 7/7) | ✅ **완료 2026-06-26** |
 | **Phase 6.3** | Streaming + prefix caching: speech ~2s warm (69×) | ✅ **완료 2026-06-26** |
 | **Phase 6.4** | action_ready_cb + 약어 키: full inference 9.6s→7.4s | ✅ **완료 2026-06-26** |
-| **Phase 6.5** | HITL 에피소드 수집 + 첫 LoRA 어댑터 (로봇 필요) | 🔄 **다음 단계** |
+| **Phase 6.5** | HITL 에피소드 수집 + 첫 LoRA 어댑터 (6.38s 중앙값) | ✅ **완료** |
+| **Phase 6.5.5** | **Robot-display-HRI pygame 통합** — 14 anime 감정, FULLSCREEN 1024×600 | ✅ **완료 2026-07-01** |
+| **Phase 6.6** | HITL 에피소드 수집 심화 + 첫 LoRA 어댑터 검증 | 🔄 **다음 단계** |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---

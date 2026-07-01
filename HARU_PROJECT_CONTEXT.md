@@ -1,5 +1,5 @@
 # Project HARU: Embodied Social AI Architecture
-> 최종 업데이트: 2026-06-26 | **Phase 6.3 완료** — speech 0.65s warm (69×), 7/7 노드, 11관절 전체 출력, HITL 파이프라인 준비 완료 (97% 달성) | 다음: HITL 에피소드 수집 + 첫 LoRA 어댑터
+> 최종 업데이트: 2026-07-01 | **Phase 6.5.5 완료** — Robot-display-HRI anime 얼굴 FULLSCREEN 통합, 14 감정, AI-only 제어 | 이전: speech 0.65s warm (69×), 7/7 노드, 11관절 전체 출력
 
 ---
 
@@ -57,13 +57,22 @@
 | right_wheel | 1 | -300 ~ 300 | 오른쪽 바퀴 속도 |
 | left_wheel | 2 | -300 ~ 300 | 왼쪽 바퀴 속도 |
 
-### 표정 ID
-| ID | 표정 | ID | 표정 |
-|----|------|----|------|
-| 0 | neutral (중립) | 4 | surprise (놀람) |
-| 1 | joy (기쁨) | 5 | empathy (공감) |
-| 2 | sadness (슬픔) | 6 | thinking (생각) |
-| 3 | curiosity (궁금함) | 7 | concern (걱정) |
+### 표정 ID (Phase 6.5.5 — Robot-display-HRI 통합)
+> 출처: https://github.com/HGU-SIRLab/Robot-display-HRI (pygame anime 얼굴, 14감정)
+> AI(/haru_expression Int32)가 EMOTION_MAP으로 변환 → pygame emotion_queue → 렌더러
+
+| HARU ID | 감정명 | Robot-display-HRI 키 |
+|---------|--------|---------------------|
+| 0 | neutral (중립) | NEUTRAL |
+| 1 | joy (기쁨) | HAPPY |
+| 2 | sadness (슬픔) | SAD |
+| 3 | curiosity (궁금함) | THINKING |
+| 4 | surprise (놀람) | SURPRISED |
+| 5 | empathy (공감) | TENDER |
+| 6 | thinking (생각) | THINKING |
+| 7 | concern (걱정) | SCARED |
+
+내부 전용 감정 (brain이 직접 출력하지 않음): EXCITED, ANGRY, LISTENING, CLOSE, SCANNING, SLEEPY, WAKE
 
 ---
 
@@ -362,7 +371,12 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 | **Phase 5.6** | GPU 복구 + TRT-LLM 경로 구현 + Jetson PyTorch 버그 패치 + auto_round W4A16 양자화 | ✅ **완료 2026-06-23** |
 | **Phase 5.7** | vLLM 컨테이너 기반 Gemma4 서버 + 비전(VLM) 지원 + brain_node 통합 테스트 | ✅ **완료 2026-06-25** |
 | **Phase 5.8** | 추론 속도 가속 (2.8 tok/s → 20+ tok/s, ~64s → ~5s) | 🔄 **진행 예정** |
-| **Phase 6** | Piper TTS 노드 + 표정 디스플레이 노드 | ⬜ 다음 단계 |
+| **Phase 6.1** | Piper TTS 노드 (edge-tts ko-KR-SunHiNeural) | ✅ 완료 2026-06-26 |
+| **Phase 6.2** | 표정 디스플레이 노드 (pygame 8감정, haru_all 7/7) | ✅ 완료 2026-06-26 |
+| **Phase 6.3** | Streaming + prefix caching (speech 0.65s warm, 69×) | ✅ 완료 2026-06-26 |
+| **Phase 6.4** | action_ready_cb + 약어 키 (7.4s full inference) | ✅ 완료 2026-06-26 |
+| **Phase 6.5** | HITL 에피소드 수집 + 첫 LoRA 어댑터 (6.38s 중앙값) | ✅ 완료 |
+| **Phase 6.5.5** | **Robot-display-HRI 통합** — 14 anime 감정, FULLSCREEN, AI-only 제어 | ✅ **완료 2026-07-01** |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---
@@ -411,7 +425,7 @@ audio_node       (16kHz VAD, C270)
 brain_node       (Gemma 4 12B, 스트리밍, prefix caching)
 action_node      (50Hz Smoothstep, 11관절 전체 제어)
 tts_node         (edge-tts ko-KR-SunHiNeural, 400ms, mpg123 hw:3,0)
-expression_node  (pygame 800×600, 8감정, DISPLAY=:0)
+expression_node  (Robot-display-HRI pygame FULLSCREEN 1024×600, 14감정, DISPLAY=:0)
 ```
 
 #### 실제 출력 로그 예 (Phase 6.3 이후)
@@ -460,7 +474,13 @@ robot_brain_workspace/
 │   │   └── adapter_manager.py
 │   ├── haru_action/           ← System 1 (50Hz Smoothstep, 9관절+2바퀴)
 │   ├── haru_tts/              ← TTS 노드 (edge-tts ko-KR, Phase 6.1 신규) ★
-│   ├── haru_expression/       ← 표정 디스플레이 (pygame 8감정, Phase 6.2 신규) ★
+│   ├── haru_expression/       ← 표정 디스플레이 (Robot-display-HRI, 14감정, FULLSCREEN, Phase 6.5.5 교체) ★
+│   │   └── haru_expression/
+│   │       ├── expression_node.py  ← ROS2 래퍼 (emotion_queue → run_face_app)
+│   │       └── robot_face/         ← Robot-display-HRI 소스 (github.com/HGU-SIRLab/Robot-display-HRI)
+│   │           ├── main.py         ← RobotFaceApp, FULLSCREEN, 키보드/마우스 제거
+│   │           ├── common_helpers.py
+│   │           └── emotions/       ← 14 감정 모듈
 │   └── haru_logger/           ← HITL 로거 (attention_source/context 저장)
 ├── scripts/
 │   ├── gemma4_mm_patch.py     ← Gemma4UnifiedVisionEmbedder 패치 (Phase 5.8) ★

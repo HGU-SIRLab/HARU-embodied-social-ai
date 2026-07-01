@@ -1,6 +1,6 @@
 ================================================================
 HARU 석사 연구 목표 (조형민, 한동대학교)
-작성일: 2026-06-19 | 업데이트: 2026-06-26 (Phase 6.3 완료 — speech 발행 지연 1.60s 달성, 목표 5s 3배 초과 ✅)
+작성일: 2026-06-19 | 업데이트: 2026-07-01 (Phase 6.5.5 완료 — Robot-display-HRI 14 anime 감정 FULLSCREEN 통합 ✅)
 ================================================================
 
 
@@ -177,10 +177,14 @@ LoRA(Low-Rank Adaptation) 어댑터로 모듈화하여 축적한다.
   ✅ TTS 노드 구현 (Phase 6.1 완료)
      - edge-tts ko-KR-SunHiNeural 400ms 생성, mpg123 USB 스피커 출력
      - /haru_speech → 실제 한국어 발화 (brain 응답을 음성으로 출력)
-  ✅ 표정 디스플레이 노드 구현 (Phase 6.2 완료)
-     - pygame X11 (DISPLAY=:0) 800×600 얼굴 렌더러
-     - 8가지 감정: neutral/joy/sadness/curiosity/surprise/empathy/thinking/concern
-     - ease-in-out 전환 애니메이션, 4초 주기 자동 눈 깜빡임
+  ✅ 표정 디스플레이 노드 구현 (Phase 6.2 완료 → Phase 6.5.5 업그레이드)
+     - Phase 6.2: pygame X11 800×600, 기하학 도형 8감정 렌더러
+     - Phase 6.5.5 (2026-07-01): Robot-display-HRI anime 얼굴로 완전 교체
+       출처: https://github.com/HGU-SIRLab/Robot-display-HRI
+       - FULLSCREEN 1024×600 (pygame.FULLSCREEN | NOFRAME)
+       - 14 anime-style 감정 (NEUTRAL/HAPPY/SAD/THINKING/SURPRISED/TENDER/SCARED/…)
+       - 키보드/마우스/30초 타임아웃 제거 — AI가 /haru_expression Int32로만 제어
+       - 동공 랜덤 이동, 자동 눈깜빡임, SCANNING/LISTENING 특수 모드 유지
      - /haru_expression (Int32) 구독, haru_all 7/7 노드
 
 ------------------------------------------------------------
@@ -271,6 +275,17 @@ Phase 6.4+ (데이터 수집·LoRA)           ██████████  99
      - haru_all 7개 노드 동시 실행 확인
   결과: 원칙 3 (Proactive HRI) 90%+
 
+[완료 — Phase 6.5.5 (2026-07-01)]
+  6.5.5. ✅ Robot-display-HRI anime 얼굴 통합 (src/haru_expression/haru_expression/robot_face/)
+     - 출처: https://github.com/HGU-SIRLab/Robot-display-HRI
+     - FaceRenderer(기하학 도형 8감정) → anime 스타일 14감정 pygame 렌더러로 교체
+     - pygame.FULLSCREEN | NOFRAME, 1024×600 해상도
+     - 키보드 (0-9/Q-Y 감정전환), 마우스 (트리플클릭), 30초 타임아웃 완전 제거
+     - AI만 /haru_expression Int32로 제어 (EMOTION_MAP: 0→NEUTRAL … 7→SCARED)
+     - symlink install 대응: os.path.realpath() → sys.path에 robot_face/ 추가
+     - 통합 테스트: 7/7 노드, vLLM 연결 ✅ TRT-LLM 서버 연결 성공
+  결과: 원칙 3 (Proactive HRI) — 시각적 표현력 대폭 향상 (8→14 감정, 전문 anime 렌더링)
+
 [완료 — Phase 6.3 (2026-06-26)]
   6. ✅ Streaming 추론 + SWM 압축 + 이미지 최적화
      - stream=True: speech 필드 완성 즉시 TTS 발행 (_extract_speech_field)
@@ -325,6 +340,12 @@ Phase 6.4+ (데이터 수집·LoRA)           ██████████  99
     · ✅ 표정 디스플레이 노드 (pygame 8가지 감정, haru_all 7/7)
     · ✅ Streaming 추론 (speech 조기 감지 2.77s, 체감 지연 66% 단축)
     · ✅ SWM 토큰 압축 (window 2쌍, 응답 압축, 시스템 프롬프트 최소화)
+
+  완료됨 (Phase 6.5.5 — 2026-07-01):
+    · ✅ Robot-display-HRI anime 얼굴 통합 (출처: github.com/HGU-SIRLab/Robot-display-HRI)
+         14 anime 감정, pygame FULLSCREEN 1024×600
+         키보드/마우스/타임아웃 제거 → AI-only 표정 제어
+         expression_node 완전 교체 (FaceRenderer → run_face_app 래퍼)
 
   우선순위 중간:
     · 에피소드 평가 스크립트 (교정 감소율 자동 계산)
