@@ -207,6 +207,7 @@ class HaruBrainNode(Node):
                     age = time.time() - self._audio_recv_time
                     if age > self._audio_timeout:
                         audio = None
+                        self._latest_audio = None  # 만료된 오디오도 제거
                     else:
                         self._latest_audio = None  # 한 번만 사용
 

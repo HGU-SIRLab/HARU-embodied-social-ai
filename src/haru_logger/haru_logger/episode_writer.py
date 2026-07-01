@@ -50,12 +50,22 @@ EXPRESSION_LABELS = {
     4: "surprise", 5: "empathy", 6: "thinking", 7: "concern",
 }
 
+# brain이 약어(ht/hp/hr/...)로 action을 생성하므로 긴 이름으로 매핑
+_ABBREV_TO_LONG = {
+    'ht': 'head_tilt',       'hp': 'head_pan',         'hr': 'head_roll',
+    'rap': 'r_arm_pitch',    'lap': 'l_arm_pitch',
+    'rsr': 'r_shoulder_roll','rep': 'r_elbow_pitch',
+    'lsr': 'l_shoulder_roll','lep': 'l_elbow_pitch',
+    'rw': 'right_wheel',     'lw': 'left_wheel',
+}
+
 
 def action_to_normalized(action_dict: dict) -> np.ndarray:
-    """HaruAction dict → [-1, 1] 정규화 벡터 (12-dim)."""
+    """HaruAction dict → [-1, 1] 정규화 벡터 (12-dim). 약어·긴 이름 모두 허용."""
+    expanded = {_ABBREV_TO_LONG.get(k, k): v for k, v in action_dict.items()}
     result = []
     for name, lo, hi in HARU_DOF_RANGES:
-        val = float(action_dict.get(name, (lo + hi) / 2.0))
+        val = float(expanded.get(name, (lo + hi) / 2.0))
         norm = 2.0 * (val - lo) / (hi - lo) - 1.0
         result.append(float(np.clip(norm, -1.0, 1.0)))
     return np.array(result, dtype=np.float32)

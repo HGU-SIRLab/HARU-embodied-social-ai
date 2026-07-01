@@ -378,15 +378,15 @@ class HaruHITLNode(Node):
             corrected_action[name] = joints[name]
 
         print('  캡처 완료:')
-        print(f'    머리  : tilt={joints["head_tilt"]:.0f}'
-              f'  pan={joints["head_pan"]:.0f}'
-              f'  roll={joints["head_roll"]:.0f}')
-        print(f'    오른팔: pitch={joints["r_arm_pitch"]:.0f}'
-              f'  shoulder={joints["r_shoulder_roll"]:.0f}'
-              f'  elbow={joints["r_elbow_pitch"]:.0f}')
-        print(f'    왼팔  : pitch={joints["l_arm_pitch"]:.0f}'
-              f'  shoulder={joints["l_shoulder_roll"]:.0f}'
-              f'  elbow={joints["l_elbow_pitch"]:.0f}')
+        print(f'    머리  : tilt={joints["ht"]:.0f}'
+              f'  pan={joints["hp"]:.0f}'
+              f'  roll={joints["hr"]:.0f}')
+        print(f'    오른팔: pitch={joints["rap"]:.0f}'
+              f'  shoulder={joints["rsr"]:.0f}'
+              f'  elbow={joints["rep"]:.0f}')
+        print(f'    왼팔  : pitch={joints["lap"]:.0f}'
+              f'  shoulder={joints["lsr"]:.0f}'
+              f'  elbow={joints["lep"]:.0f}')
         sys.stdout.flush()
 
     # ── 입력 헬퍼 ────────────────────────────────────────────────
