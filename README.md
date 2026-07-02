@@ -4,8 +4,8 @@
   <img src="https://img.shields.io/badge/ROS2-Humble-blue" />
   <img src="https://img.shields.io/badge/Jetson-AGX_Orin_64GB-green" />
   <img src="https://img.shields.io/badge/Model-Gemma_4_12B-orange" />
-  <img src="https://img.shields.io/badge/Phase-6.5.5_(완료)-purple" />
-  <img src="https://img.shields.io/badge/Inference-vLLM_W4A16_19tok%2Fs-red" />
+  <img src="https://img.shields.io/badge/Phase-6.7_(완료)-purple" />
+  <img src="https://img.shields.io/badge/Inference-vLLM_W4A16_QAT_18tok%2Fs-red" />
   <img src="https://img.shields.io/badge/Speech-0.65s_warm_(69×)-brightgreen" />
 </p>
 
@@ -100,8 +100,8 @@ The Triple-System separates *perceptual attention* (System 3, always-on CPU), *d
 
 | Tier | Method | Size | Latency | Status |
 |------|--------|------|---------|--------|
-| **1 (Active)** | **vLLM W4A16 + Marlin INT4 + CUDAGraph** | **~7.4 GB** | **19 tok/s · speech ~2s warm · full 7.4s** | **✅ Running** |
-| 2 | auto_round W4A16 direct load | ~7.4 GB | ~10–20s | ✅ fallback |
+| **1 (Active)** | **vLLM W4A16 QAT (Google official, Phase 6.7) + Marlin INT4 + CUDAGraph** | **~9.6 GB** | **18 tok/s · speech ~2s warm · full 7.4s** | **✅ Running** |
+| 2 | auto_round W4A16 RTN direct load | ~7.4 GB | ~10–20s | ✅ fallback |
 | 3 | HF Transformers bf16 | ~22 GB | ~15–30s | ✅ fallback |
 
 **Key optimizations (cumulative):**
@@ -569,6 +569,7 @@ Each HITL episode step is stored as a compressed NumPy archive:
 | **Phase 6.5** | HITL 에피소드 수집 + 첫 LoRA 어댑터 (6.38s 중앙값) | ✅ **완료** |
 | **Phase 6.5.5** | **Robot-display-HRI pygame 통합** — 14 anime 감정, FULLSCREEN 1024×600 | ✅ **완료 2026-07-01** |
 | **Phase 6.6** | HITL 에피소드 수집 심화 + 첫 LoRA 어댑터 검증 | 🔄 **다음 단계** |
+| **Phase 6.7** | Google 공식 QAT 체크포인트 프로덕션 교체 — PPL -21.4%, 속도 -4.3% | ✅ **완료 2026-07-02** |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---

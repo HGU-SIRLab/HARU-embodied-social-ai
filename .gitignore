@@ -69,14 +69,23 @@ torchvision_src/
 # TRT-LLM 변환 엔진 (대용량 바이너리)
 data/trtllm/
 
-# auto_round 양자화 모델 (대용량, 로컬 생성)
+# auto_round 양자화 모델 (대용량, 로컬 생성) — Phase 6.7 QAT 교체 후 백업용 보관
 data/gemma4_autoround_w4a16/
+
+# Google 공식 QAT 체크포인트 원본 (대용량, HF 다운로드)
+data/gemma4_qat_w4a16/
 
 # Phase 5.8: vLLM용 패치 모델 디렉토리 (safetensors 대용량)
 data/gemma4_vllm_patched/
 
+# Phase 6.7 이전 RTN 패치 모델 백업 (롤백용)
+data/gemma4_vllm_patched_rtn_backup/
+
 # Phase 5.8: torch.compile 캐시 (바이너리, 109MB)
 data/vllm_compile_cache/
+
+# Phase 6.7 이전 RTN torch.compile 캐시 백업
+data/vllm_compile_cache_rtn_backup/
 
 # ============================================================
 # 테스트 파일

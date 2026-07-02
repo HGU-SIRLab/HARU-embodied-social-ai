@@ -1,5 +1,5 @@
 # Project HARU: Embodied Social AI Architecture
-> 최종 업데이트: 2026-07-01 | **Phase 6.5.5 완료** — Robot-display-HRI anime 얼굴 FULLSCREEN 통합, 14 감정, AI-only 제어 | 이전: speech 0.65s warm (69×), 7/7 노드, 11관절 전체 출력
+> 최종 업데이트: 2026-07-02 | **Phase 6.7 완료** — Google 공식 QAT 체크포인트 프로덕션 교체 (PPL -21.4%, 속도 -4.3%) | 이전: Phase 6.5.5 Robot-display-HRI anime 얼굴 FULLSCREEN 통합, 14 감정, AI-only 제어, speech 0.65s warm (69×), 7/7 노드
 
 ---
 
@@ -313,7 +313,7 @@ _ar_export.set_module = _patched_set_module  # export 모듈
 
 검증: 진단 실행 (4 샘플) → 328 qweight, 1333 키, 2 shard 확인.
 
-#### W4A16 PPL 검증 결과 (2026-07-01)
+#### W4A16 PPL 검증 결과 (2026-07-01, RTN 최초 측정)
 
 측정 방식: logprob 기반 통일 계산 (BOS 제외, vLLM `echo+logprobs`와 동등)
 캘리브레이션 코퍼스: 한국어 대화·감정 15문장 + 영어 HRI 관련 15문장 (총 30문장)
@@ -330,10 +330,41 @@ _ar_export.set_module = _patched_set_module  # export 모듈
 vLLM은 이종 어텐션 인식 후 TRITON_ATTN 커널이 RoPE를 직접 처리하므로
 Python 레벨 RoPE 패치와 무관. PPL 열화는 순수 RTN 양자화 특성.
 
-**재양자화 미시행 결정 (2026-07-01)**:
-- 목표 5% 이하는 W4A16 수준에서 구조적으로 불가 (W8A16 이상 필요)
-- GROUP_SIZE=64 / SignRound 적용 시 추론 속도 저하 → 인터랙션 속도 우선순위 충돌
-- 실제 운용 품질은 HRI 시나리오에서 별도 검증됨 (speech warm 0.65s, Phase 6.3)
+#### Phase 6.7 — Google 공식 QAT 체크포인트로 교체 (2026-07-02)
+
+RTN 대신 Google이 2026-06-05 공식 배포한 QAT(양자화 인식 학습) 체크포인트
+(`google/gemma-4-12B-it-qat-w4a16-ct`, compressed-tensors 포맷)를 프로덕션에 적용.
+RTN·QAT를 **동일 스크립트·동일 30문장 코퍼스·동일 vLLM echo+logprobs 방식**으로
+나란히 재측정(apples-to-apples):
+
+| 구성 | 코퍼스 PPL | 속도 (decode) |
+|------|-----------|---------------|
+| W4A16 RTN (재측정, 2026-07-02) | 3298.28 | 18.87 tok/s |
+| W4A16 QAT (2026-07-02) | **2592.03 (-21.4%)** | 18.06 tok/s (-4.3%) |
+
+> 위 표의 RTN=3298.28은 이 재측정에서 나온 값으로, 위 2026-07-01 표의 2,569와 다름
+> (당시 측정 스크립트가 정확히 기록되지 않아 재현 불가 — 이번엔 RTN·QAT를 완전히
+> 동일한 조건에서 나란히 측정해 상대 비교 신뢰도를 확보함). 절대 PPL이 두 모델 다
+> 큰 이유: 코퍼스가 "사용자가 로봇에 할 법한 개방형 질문"이라 instruction-tuned
+> 모델 입장에서 정답 분포가 넓어 원래 절대값 자체가 크다 (bf16도 1,443).
+
+**패치**: 코드 변경 없이 config.json 2개 필드만 수정 (기존 `gemma4_mm_patch.py` 그대로 재사용)
+- `architectures`: `Gemma4UnifiedForConditionalGeneration` → `Gemma4ForConditionalGeneration`
+  (vLLM 0.21.0 registry.py 미등록 이름이라 패치가 이미 처리하는 이름으로 정정)
+- `vision_config.default_output_length: 280` 추가 (HF 공식 config엔 `num_soft_tokens`만 있고
+  vLLM 패치가 참조하는 필드명이 없어 `AttributeError` 발생 → 동일값으로 추가)
+
+**검증**: 실제 HARU 시스템 프롬프트(MindPower 6단계 + JSON 스키마) + 이미지 입력 + 스트리밍으로
+`gemma4_trtllm_inference.py`(brain_node 1순위 경로) 재현 테스트 → JSON 스키마 정상 출력,
+침묵 규칙("생각에 잠긴 상황" → `speech:""`, `emotion:"thinking"`)도 정확히 재현됨.
+`haru_all` 무수정으로 정상 동작 확인.
+
+**모델 위치**: `data/gemma4_vllm_patched/` = QAT (현재 프로덕션).
+RTN 백업: `data/gemma4_vllm_patched_rtn_backup/` (롤백 시 두 디렉토리명 맞바꾸면 됨).
+`scripts/run_vllm_server.sh`는 무수정.
+
+**재양자화(SignRound) 계획 폐기**: QAT 교체로 목표 달성, GROUP_SIZE=64/SignRound(ITERS=200)
+재시도 계획은 더 이상 불필요.
 
 ### 메모리 계획 (Jetson 64GB)
 | 항목 | 점유량 |
@@ -399,6 +430,7 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 | **Phase 6.4** | action_ready_cb + 약어 키 (7.4s full inference) | ✅ 완료 2026-06-26 |
 | **Phase 6.5** | HITL 에피소드 수집 + 첫 LoRA 어댑터 (6.38s 중앙값) | ✅ 완료 |
 | **Phase 6.5.5** | **Robot-display-HRI 통합** — 14 anime 감정, FULLSCREEN, AI-only 제어 | ✅ **완료 2026-07-01** |
+| **Phase 6.7** | **QAT 체크포인트 교체** — Google 공식 QAT(compressed-tensors), PPL -21.4%, 속도 -4.3% | ✅ **완료 2026-07-02** |
 | **Phase 7** | System 1 고도화 (ACT / Diffusion Policy) | ⬜ 미착수 |
 
 ---
@@ -424,9 +456,9 @@ data/episodes/episode_YYYYMMDD_HHMMSS/
 ### Phase 5.7~6.3 — 추론 가속 전체 경로 (완료 2026-06-26)
 
 #### 현재 추론 아키텍처
-- **서버**: vLLM 0.21.0 컨테이너, W4A16 AutoRound + Marlin INT4 GEMM + CUDAGraph
-- **모델**: `data/gemma4_autoround_w4a16/` (7.4GB) + `gemma4_mm_patch.py` (VisionEmbedder 패치)
-- **속도**: 19.3~19.6 tok/s (텍스트/비전 동일), 비전 포함 50-tok 응답 2.6s
+- **서버**: vLLM 0.21.0 컨테이너, W4A16 QAT(Google 공식, compressed-tensors) + Marlin INT4 GEMM + CUDAGraph (Phase 6.7, 이전: AutoRound RTN)
+- **모델**: `data/gemma4_vllm_patched/` = QAT 원본 `data/gemma4_qat_w4a16/` 패치본 (Phase 6.7) + `gemma4_mm_patch.py` (VisionEmbedder 패치, 코드 무수정 재사용)
+- **속도**: 18.06 tok/s (QAT, Phase 6.7 재측정) — 이전 RTN 19.3~19.6 tok/s 대비 -4.3%
 - **시작**: `bash scripts/run_vllm_server.sh`
 
 #### 체감 지연 최적화 (Phase 6.3)
@@ -478,7 +510,10 @@ robot_brain_workspace/
 │   ├── episodes/              ← HITL 수집 데이터 (attention_source/context 포함)
 │   ├── adapters/              ← 학습된 LoRA 어댑터
 │   ├── memory/                ← SWM 이력 (swm_history.json)
-│   ├── gemma4_autoround_w4a16/ ← auto_round W4A16 양자화 모델 ✅ 완료
+│   ├── gemma4_autoround_w4a16/ ← auto_round W4A16 RTN 양자화 원본 모델 (Phase 6.7 이전 프로덕션 소스)
+│   ├── gemma4_qat_w4a16/      ← Google 공식 QAT 체크포인트 원본 (HF 다운로드, Phase 6.7) ★
+│   ├── gemma4_vllm_patched/   ← vLLM 서빙용 패치 모델 = **QAT (현재 프로덕션, Phase 6.7)** ★
+│   ├── gemma4_vllm_patched_rtn_backup/ ← 이전 RTN 패치 모델 (롤백용 백업, Phase 6.7)
 │   ├── trtllm/engine/         ← TRT-LLM 엔진 (빌드 완료 후 생성)
 │   └── trtllm/visual_engine/  ← TRT-LLM 비전 인코더
 ├── src/

@@ -1,7 +1,7 @@
 ================================================================
 HARU 실행 명령어 & 운용 가이드
-System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B VLM (19 tok/s) | System 1: haru_action (50Hz)
-최종 업데이트: 2026-07-01 (Phase 6.5.5 완료: Robot-display-HRI 14감정 FULLSCREEN 통합 | AI-only 표정 제어 | 7/7 노드 haru_all)
+System 3: haru_attention (이벤트 드리븐) | System 2: Gemma 4 12B VLM (18 tok/s, QAT) | System 1: haru_action (50Hz)
+최종 업데이트: 2026-07-02 (Phase 6.7 완료: Google 공식 QAT 체크포인트 프로덕션 교체, PPL -21.4% | 이전: Phase 6.5.5 Robot-display-HRI 14감정 FULLSCREEN 통합 | AI-only 표정 제어 | 7/7 노드 haru_all)
 ================================================================
 
 
@@ -345,7 +345,7 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
   - 중국 모델 사용 금지 (Qwen, DeepSeek, GLM, InternVLA 등)
   - Gemma 4 12B: bitsandbytes 4-bit 비호환 (SM87 커널 미지원) → auto_round/TRT-LLM 경로로 4-bit 구현
   - torch: Jetson 전용 wheel 사용 중 (2.5.0a0+nv24.08, CUDA 12.6 호환)
-  - Gemma 4 추론 속도: vLLM W4A16 19 tok/s, speech 0.65s warm (69×) / bf16 ~45s 대비
+  - Gemma 4 추론 속도: vLLM W4A16(QAT, Phase 6.7) 18 tok/s, speech 0.65s warm (69×) / bf16 ~45s 대비
   - vLLM 서버: --enable-prefix-caching --max-model-len 2048 --gpu-memory-utilization 0.72
   - 스트리밍: speech_ready_cb(~0.65s) → TTS 선발행 / expression_ready_cb(~1.32s) → 표정 선변경
   - attention_node: CPU 전용 (GPU는 Gemma 4 전용)
@@ -354,11 +354,11 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
   - vision_node 충돌 시: source ~/.bashrc 후 재실행
 
 ================================================================
-[ 13. 추론 서버 & 가속 (Phase 5.8 완료: 19 tok/s, Phase 6.3 완료: 0.65s) ]
+[ 13. 추론 서버 & 가속 (Phase 5.8 완료: 19 tok/s→Phase 6.7: QAT 18 tok/s, Phase 6.3 완료: 0.65s) ]
 ================================================================
 
   brain_node.py는 시작 시 자동으로 아래 순서로 추론 경로 선택:
-    1순위: vLLM 서버 (포트 8000) → 19 tok/s, speech 0.65s warm ★
+    1순위: vLLM 서버 (포트 8000) → 18 tok/s (QAT, Phase 6.7), speech 0.65s warm ★
     2순위: auto_round W4A16 직접 로드 → ~10-20s
     3순위: HF bf16 GPU (기본값, 즉시 사용 가능) → ~15-30s
 
@@ -386,7 +386,7 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
     컨테이너: haru_vllm_server
     이미지: vllm:r36.5.tegra-aarch64-cu126-22.04-vllm (gptqmodel 제거됨)
     서버: scripts/gemma4_server.py (FastAPI, OpenAI Vision API 호환)
-    모델: data/gemma4_autoround_w4a16/ (W4A16, 7.4GB)
+    모델: data/gemma4_vllm_patched/ (W4A16 QAT, Phase 6.7 — 이전 RTN은 gemma4_vllm_patched_rtn_backup/)
     백엔드: auto_round:tritonv2_zp (monkey-patch로 gptqmodel 우회)
     비전: AutoProcessor + image_url base64 → PIL
 
@@ -600,6 +600,38 @@ Gemma 4 침묵 선택 (Phase 5.5 신규):
   haru_brain  : setuptools 81.0.0 호환 수동 install 구조 생성 완료
   haru_attn   : 수동 install 구조 신규 생성 완료
                 (소스 심볼릭 링크 → 소스 수정 즉시 반영)
+
+================================================================
+[ 2026-07-02 Phase 6.7 완료 — 변경 이력 ]
+================================================================
+
+  [Phase 6.7 — Google 공식 QAT 체크포인트로 프로덕션 교체]
+  배경: AutoRound RTN(ITERS=0) 양자화의 PPL 열화(+78%, 2026-07-01 측정) 개선 목적.
+       Google이 2026-06-05 Gemma 4 전 사이즈 QAT 체크포인트 공식 배포 확인.
+
+  다운로드 & 패치:
+    google/gemma-4-12B-it-qat-w4a16-ct (10.26GB, compressed-tensors W4A16)
+    → data/gemma4_qat_w4a16/ (원본) → data/gemma4_vllm_patched/ (패치, 하드링크로 중복 방지)
+    config.json 수정 2건 (코드 변경 없음):
+      · architectures: Gemma4UnifiedForConditionalGeneration → Gemma4ForConditionalGeneration
+        (vLLM 0.21.0 registry.py 미등록 이름 → 기존 gemma4_mm_patch.py가 이미 처리하는 이름으로 정정)
+      · vision_config.default_output_length: 280 추가 (누락 시 AttributeError)
+
+  실측 (RTN·QAT 동일 스크립트·동일 30문장 코퍼스·vLLM echo+logprobs로 나란히 재측정):
+    코퍼스 PPL: RTN 3298.28 → QAT 2592.03 (-21.4%)
+    속도:      RTN 18.87 tok/s → QAT 18.06 tok/s (-4.3%)
+
+  검증: 실제 시스템 프롬프트(MindPower 6단계+JSON 스키마) + 이미지 + 스트리밍으로
+       gemma4_trtllm_inference.py(brain_node 1순위 경로) 재현 테스트 → JSON 스키마 정상,
+       침묵 규칙도 정확히 재현. haru_all(launch_vla.sh, 기본 all 모드) 무수정 정상 동작 확인.
+
+  디렉토리 스왑 (scripts/run_vllm_server.sh 자체는 무수정):
+    data/gemma4_vllm_patched/            ← QAT (신규 프로덕션)
+    data/gemma4_vllm_patched_rtn_backup/ ← RTN (롤백용 백업)
+    data/vllm_compile_cache/             ← QAT용 torch.compile 캐시
+    data/vllm_compile_cache_rtn_backup/  ← RTN용 캐시 백업
+
+  결정: SignRound(ITERS=200) 재양자화 계획 폐기 (QAT로 목표 달성).
 
 ================================================================
 [ 2026-07-01 Phase 6.5.5 완료 — 변경 이력 ]

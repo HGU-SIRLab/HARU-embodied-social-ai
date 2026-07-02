@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # vLLM 추론 서버 실행 (OpenAI 호환 API, 포트 8000)
-# Gemma 4 W4A16 AutoRound + vLLM + Marlin + CUDAGraph
-# 속도: ~19 tok/s (Phase 5.8 목표 달성)
+# Gemma 4 W4A16 Google 공식 QAT (compressed-tensors) + vLLM + Marlin + CUDAGraph
+# 속도: ~18 tok/s, PPL: RTN(AutoRound) 대비 -21% (Phase 6.7, 2026-07-02 교체)
+# RTN 백업: data/gemma4_vllm_patched_rtn_backup/ (롤백 시 gemma4_vllm_patched로 rename)
 #
 # 서버 확인:
 #   curl http://localhost:8000/v1/models
